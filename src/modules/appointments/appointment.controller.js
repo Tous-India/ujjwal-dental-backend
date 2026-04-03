@@ -2,7 +2,11 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Appointment from "./appointment.model.js";
 import Patient from "../patients/patient.model.js";
+import Payment from "../payments/payment.model.js";
+import SystemSettings from "../settings/settings.model.js";
 import mongoose from "mongoose";
+import { sendEmail } from "../../utils/email.js";
+
 /**
  * APPOINTMENT CONTROLLER
  * Handles appointment booking and management
@@ -125,26 +129,78 @@ export const getUpcomingAppointments = asyncHandler(async (req, res) => {
  * @route   GET /api/appointments/available-slots?clinic=&date=
  * @access  Public
  */
-// export const getAvailableSlots = asyncHandler(async (req, res) => {
-//   const { clinic, date } = req.query;
+export const getAvailableSlots = asyncHandler(async (req, res) => {
+  const { clinic: clinicId, date } = req.query;
 
-//   // TODO: Implement get available slots
-//   // 1. Get clinic operating hours
-//   // 2. Generate all slots (30 min intervals)
-//   // 3. Get booked appointments
-//   // 4. Filter out booked slots
-//   // 5. If today, filter past slots
-//   // 6. Return available slots
+  if (!clinicId || !date) {
+    return ApiResponse.error(res, "Clinic and date are required", 400);
+  }
 
-//   const slots = {
-//     date,
-//     clinic,
-//     available: [],
-//     message: "Available slots fetched",
-//   };
+  if (!mongoose.Types.ObjectId.isValid(clinicId)) {
+    return ApiResponse.error(res, "Invalid clinic ID", 400);
+  }
 
-//   ApiResponse.success(res, slots, "Slots fetched successfully");
-// });
+  const requestedDate = new Date(date);
+  if (isNaN(requestedDate.getTime())) {
+    return ApiResponse.error(res, "Invalid date format", 400);
+  }
+
+  // Default clinic hours: 9 AM to 7 PM, 30-min slots
+  const SLOT_START_HOUR = 9;
+  const SLOT_END_HOUR = 19;
+  const SLOT_DURATION_MIN = 30;
+
+  // Generate all possible slots
+  const allSlots = [];
+  for (let h = SLOT_START_HOUR; h < SLOT_END_HOUR; h++) {
+    for (let m = 0; m < 60; m += SLOT_DURATION_MIN) {
+      const hh = String(h).padStart(2, "0");
+      const mm = String(m).padStart(2, "0");
+      allSlots.push(`${hh}:${mm}`);
+    }
+  }
+
+  // Get booked slots for this date
+  const startOfDay = new Date(requestedDate);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(requestedDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const bookedAppointments = await Appointment.find({
+    clinic: clinicId,
+    date: { $gte: startOfDay, $lte: endOfDay },
+    status: { $nin: ["cancelled"] },
+  }).select("timeSlot");
+
+  const bookedSlots = bookedAppointments.map((apt) => apt.timeSlot);
+
+  // Filter out booked slots
+  let availableSlots = allSlots.filter((slot) => !bookedSlots.includes(slot));
+
+  // If today, filter out past slots
+  const now = new Date();
+  const isToday =
+    requestedDate.toDateString() === now.toDateString();
+  if (isToday) {
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    availableSlots = availableSlots.filter((slot) => {
+      const [h, m] = slot.split(":").map(Number);
+      return h * 60 + m > currentMinutes;
+    });
+  }
+
+  ApiResponse.success(
+    res,
+    {
+      date: requestedDate.toISOString().split("T")[0],
+      clinic: clinicId,
+      totalSlots: allSlots.length,
+      bookedSlots: bookedSlots.length,
+      availableSlots,
+    },
+    "Available slots fetched successfully"
+  );
+});
 
 /**
  * @desc    Get appointment by ID
@@ -177,7 +233,14 @@ export const getAppointmentById = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Appointment not found", 404);
   }
 
-  ApiResponse.success(res, { appointment }, "Appointment fetched successfully");
+  // Find payment linked to this appointment
+  const payment = await Payment.findOne({ appointment: id })
+    .select("paymentNumber amount paymentMode status paidAt razorpayPaymentId");
+
+  const appointmentData = appointment.toObject();
+  appointmentData.payment = payment || null;
+
+  ApiResponse.success(res, { appointment: appointmentData }, "Appointment fetched successfully");
 });
 
 /**
@@ -202,11 +265,7 @@ export const getAppointmentsByPhone = asyncHandler(async (req, res) => {
     .populate("createdBy", "name")
     .sort({ date: -1 });
 
-  if (!appointments.length) {
-    return ApiResponse.error(res, "No appointments found", 404);
-  }
-
-  ApiResponse.success(res, { appointments }, "Appointments fetched successfully");
+  ApiResponse.success(res, { appointments: appointments || [] }, appointments.length ? "Appointments fetched successfully" : "No appointments yet");
 });
 
 /**
@@ -216,8 +275,10 @@ export const getAppointmentsByPhone = asyncHandler(async (req, res) => {
  */
 
 export const createAppointment = asyncHandler(async (req, res) => {
-  const { patientId, name, phone, clinic, date, timeSlot, reason, type } =
-    req.body;
+  const {
+    patientId, name, phone, clinic, date, timeSlot, reason, type,
+    isFree, opdFee: requestOpdFee, opdFeePaid, source, notes
+  } = req.body;
 
   /* =======================
      BASIC VALIDATIONS
@@ -303,7 +364,23 @@ export const createAppointment = asyncHandler(async (req, res) => {
      OPD FEE CALCULATION
   ======================== */
 
-  let opdFee = type === "emergency" ? 500 : 300;
+  let opdFee;
+  let appointmentIsFree = isFree || false;
+  let appointmentOpdFeePaid = opdFeePaid || false;
+
+  // If marked as free appointment, set fee to 0 and mark as paid
+  if (appointmentIsFree) {
+    opdFee = 0;
+    appointmentOpdFeePaid = true;
+  } else if (requestOpdFee !== undefined) {
+    // Use provided OPD fee from admin
+    opdFee = requestOpdFee;
+  } else {
+    // Calculate from settings
+    const settings = await SystemSettings.getSettings();
+    const feeSettings = settings.feeSettings || { opdFeeRegular: 300, opdFeeEmergency: 500 };
+    opdFee = type === "emergency" ? feeSettings.opdFeeEmergency : feeSettings.opdFeeRegular;
+  }
 
   /* =======================
      CREATE APPOINTMENT
@@ -319,6 +396,10 @@ export const createAppointment = asyncHandler(async (req, res) => {
     reason,
     type,
     opdFee,
+    isFree: appointmentIsFree,
+    opdFeePaid: appointmentOpdFeePaid,
+    source: source || "walk_in",
+    notes,
     createdBy: req.user?._id,
     // ❌ DO NOT set status
     // ❌ DO NOT set tokenNumber
@@ -336,6 +417,8 @@ export const createAppointment = asyncHandler(async (req, res) => {
       tokenNumber: appointment.tokenNumber,
       status: appointment.status,
       opdFee: appointment.opdFee,
+      isFree: appointment.isFree,
+      opdFeePaid: appointment.opdFeePaid,
       patient: {
         id: patient._id,
         name: patient.name,
@@ -343,6 +426,238 @@ export const createAppointment = asyncHandler(async (req, res) => {
       },
     },
     "Appointment created successfully",
+  );
+});
+
+/**
+ * @desc    Book appointment after payment verification
+ * @route   POST /api/appointments/book-with-payment
+ * @access  Public
+ */
+export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
+  const {
+    paymentId,
+    name,
+    phone,
+    email,
+    clinic,
+    date,
+    timeSlot,
+    reason,
+    type,
+    captchaToken,
+  } = req.body;
+
+  /* =======================
+     VERIFY reCAPTCHA
+  ======================== */
+
+  if (process.env.RECAPTCHA_SECRET_KEY && captchaToken) {
+    try {
+      const captchaRes = await fetch("https://www.google.com/recaptcha/api/siteverify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${captchaToken}`,
+      });
+      const captchaData = await captchaRes.json();
+      if (!captchaData.success) {
+        return ApiResponse.error(res, "reCAPTCHA verification failed. Please try again.", 400);
+      }
+    } catch (err) {
+      console.error("[reCAPTCHA] Verification error:", err.message);
+    }
+  }
+
+  /* =======================
+     VALIDATE PAYMENT
+  ======================== */
+
+  if (!paymentId) {
+    return ApiResponse.error(res, "Payment ID is required", 400);
+  }
+
+  const payment = await Payment.findById(paymentId);
+
+  if (!payment) {
+    return ApiResponse.error(res, "Payment not found", 404);
+  }
+
+  if (payment.status !== "paid") {
+    return ApiResponse.error(res, "Payment not completed", 400);
+  }
+
+  // Check if payment is already used for an appointment
+  if (payment.appointment) {
+    return ApiResponse.error(res, "Payment already used for an appointment", 400);
+  }
+
+  /* =======================
+     BASIC VALIDATIONS
+  ======================== */
+
+  if (!clinic || !date || !timeSlot || !phone) {
+    return ApiResponse.error(res, "Clinic, date, time slot and phone are required", 400);
+  }
+
+  if (!reason) {
+    return ApiResponse.error(res, "Reason for visit is required", 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(clinic)) {
+    return ApiResponse.error(res, "Invalid clinic ID", 400);
+  }
+
+  /* =======================
+     PATIENT HANDLING
+  ======================== */
+
+  // Try to find patient by phone or email
+  let patient = await Patient.findOne({ phone });
+  if (!patient && email) {
+    patient = await Patient.findOne({ email: email.toLowerCase() });
+  }
+
+  let isNewPatient = false;
+  if (!patient) {
+    if (!name) {
+      return ApiResponse.error(res, "Name is required for new patient", 400);
+    }
+
+    // Auto-generate password: first 4 letters of name + phone last 4 digits
+    const autoPassword = (name.replace(/\s/g, "").slice(0, 4) + phone.slice(-4)) || "Patient@123";
+
+    patient = await Patient.create({
+      name,
+      phone,
+      email: email?.toLowerCase() || undefined,
+      password: autoPassword,
+    });
+    isNewPatient = true;
+
+    // Send welcome email with login credentials
+    if (email) {
+      sendEmail({
+        to: email,
+        subject: "Welcome to Ujjwal Dental Clinic - Your Portal Login",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
+            <p>Hello ${name},</p>
+            <p>Welcome! Your patient portal account has been created.</p>
+            <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
+              <p style="margin: 4px 0;"><strong>Email:</strong> ${email}</p>
+              <p style="margin: 4px 0;"><strong>Password:</strong> ${autoPassword}</p>
+              <p style="margin: 4px 0;"><strong>Login:</strong> <a href="${process.env.FRONTEND_URL || "http://localhost:5173"}/login">Patient Portal</a></p>
+            </div>
+            <p>You can use these credentials to view your appointments, payments, and reports.</p>
+            <p style="color: #f44336; font-size: 13px;">Please change your password after first login.</p>
+            <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+            <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
+          </div>
+        `,
+        text: `Hello ${name}, Your patient portal account has been created. Email: ${email}, Password: ${autoPassword}. Login at ${process.env.FRONTEND_URL || "http://localhost:5173"}/login`,
+      }).catch((err) => console.error("[Appointment] Failed to send welcome email:", err));
+    }
+  } else if (email && !patient.email) {
+    // Update existing patient with email if they didn't have one
+    patient.email = email.toLowerCase();
+    await patient.save();
+  }
+
+  /* =======================
+     SLOT AVAILABILITY CHECK
+  ======================== */
+
+  const startOfDay = new Date(date);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(date);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const slotBooked = await Appointment.findOne({
+    clinic,
+    date: { $gte: startOfDay, $lte: endOfDay },
+    timeSlot,
+    status: { $ne: "cancelled" },
+  });
+
+  if (slotBooked) {
+    return ApiResponse.error(res, "Time slot already booked", 409);
+  }
+
+  /* =======================
+     CREATE APPOINTMENT (PAID)
+  ======================== */
+
+  const appointment = await Appointment.create({
+    patient: patient._id,
+    clinic,
+    date,
+    timeSlot,
+    reason,
+    type: type || "regular",
+    opdFee: payment.amount,
+    opdFeePaid: true,
+    source: "online",
+  });
+
+  /* =======================
+     LINK PAYMENT TO APPOINTMENT
+  ======================== */
+
+  payment.appointment = appointment._id;
+  payment.patient = patient._id;
+  await payment.save();
+
+  // Send booking confirmation email
+  if (patient.email) {
+    const apptDate = appointment.date
+      ? new Date(appointment.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+      : "N/A";
+
+    sendEmail({
+      to: patient.email,
+      subject: "Appointment Confirmed - Ujjwal Dental Clinic",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
+          <p>Hello ${patient.name || "Patient"},</p>
+          <p>Your appointment has been <strong style="color: #4caf50;">confirmed</strong>!</p>
+          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 4px 0;"><strong>Token #:</strong> ${appointment.tokenNumber || "N/A"}</p>
+            <p style="margin: 4px 0;"><strong>Date:</strong> ${apptDate}</p>
+            <p style="margin: 4px 0;"><strong>Time:</strong> ${appointment.timeSlot || "N/A"}</p>
+            <p style="margin: 4px 0;"><strong>Appointment #:</strong> ${appointment.appointmentNumber || "N/A"}</p>
+          </div>
+          <p>Please arrive 10 minutes before your scheduled time.</p>
+          <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+          <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
+        </div>
+      `,
+      text: `Hello ${patient.name}, Your appointment is confirmed. Token: ${appointment.tokenNumber}, Date: ${apptDate}, Time: ${appointment.timeSlot}. Please arrive 10 minutes early.`,
+    }).catch((err) => console.error("[Appointment] Failed to send confirmation email:", err));
+  }
+
+  /* =======================
+     RESPONSE
+  ======================== */
+
+  return ApiResponse.created(
+    res,
+    {
+      appointmentId: appointment._id,
+      appointmentNumber: appointment.appointmentNumber,
+      tokenNumber: appointment.tokenNumber,
+      status: appointment.status,
+      opdFee: appointment.opdFee,
+      opdFeePaid: true,
+      patient: {
+        id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+      },
+    },
+    "Appointment booked successfully",
   );
 });
 
@@ -660,10 +975,36 @@ export const cancelAppointment = asyncHandler(async (req, res) => {
   // 4️⃣ Add cancellation reason
   appointment.cancellationReason = reason || "Cancelled by clinic";
 
-  // 5️⃣ Send cancellation notification (placeholder)
-  // sendAppointmentCancelledNotification(appointment);
-
   await appointment.save();
+
+  // 5️⃣ Send cancellation notification via email
+  if (appointment.patient?.email) {
+    const appointmentDate = appointment.date
+      ? new Date(appointment.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+      : "N/A";
+
+    sendEmail({
+      to: appointment.patient.email,
+      subject: "Appointment Cancelled - Ujjwal Dental Clinic",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
+          <p>Hello ${appointment.patient.name || "Patient"},</p>
+          <p>Your appointment has been <strong style="color: #f44336;">cancelled</strong>.</p>
+          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 4px 0;"><strong>Date:</strong> ${appointmentDate}</p>
+            <p style="margin: 4px 0;"><strong>Time:</strong> ${appointment.timeSlot || "N/A"}</p>
+            <p style="margin: 4px 0;"><strong>Clinic:</strong> ${appointment.clinic?.name || "N/A"}</p>
+            ${appointment.cancellationReason ? `<p style="margin: 4px 0;"><strong>Reason:</strong> ${appointment.cancellationReason}</p>` : ""}
+          </div>
+          <p>If you'd like to reschedule, please visit our patient portal or contact the clinic.</p>
+          <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+          <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
+        </div>
+      `,
+      text: `Hello ${appointment.patient.name || "Patient"}, Your appointment on ${appointmentDate} at ${appointment.timeSlot || "N/A"} has been cancelled. Reason: ${appointment.cancellationReason || "N/A"}. Contact the clinic to reschedule.`,
+    }).catch((err) => console.error("[Appointment] Failed to send cancellation email:", err));
+  }
 
   // 6️⃣ Return success
   ApiResponse.success(res, appointment, "Appointment cancelled successfully");
@@ -756,4 +1097,27 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
   ======================== */
 
   ApiResponse.success(res, appointment, "Appointment rescheduled successfully");
+});
+
+/**
+ * @desc    Delete appointment permanently
+ * @route   DELETE /api/appointments/:id
+ * @access  Admin
+ */
+export const deleteAppointment = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid appointment ID", 400);
+  }
+
+  const appointment = await Appointment.findById(id);
+
+  if (!appointment) {
+    return ApiResponse.error(res, "Appointment not found", 404);
+  }
+
+  await Appointment.findByIdAndDelete(id);
+
+  ApiResponse.success(res, null, "Appointment deleted permanently");
 });

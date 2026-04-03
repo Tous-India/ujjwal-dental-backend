@@ -45,7 +45,10 @@ router.patch("/invoices/:id", authProtect, billingController.updateInvoice);
 router.post("/invoices/:id/items", authProtect, billingController.addInvoiceItem);
 
 // Remove item from invoice - Admin
-router.delete("/invoices/:id/items/:itemIndex", authProtect, billingController.removeInvoiceItem);
+router.delete("/invoices/:id/items/:itemId", authProtect, billingController.removeInvoiceItem);
+
+// Delete invoice permanently - Admin
+router.delete("/invoices/:id", authProtect, billingController.deleteInvoice);
 
 // ==================== INVOICE ACTIONS ====================
 

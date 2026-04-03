@@ -3,6 +3,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import Invoice from "./invoice.model.js";
 import Patient from "../patients/patient.model.js";
 import mongoose from "mongoose";
+import PDFDocument from "pdfkit";
 
 /**
  * BILLING CONTROLLER
@@ -578,15 +579,206 @@ export const downloadInvoicePdf = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invoice not found", 404);
   }
 
-  // TODO: Implement PDF generation using pdfkit or puppeteer
-  // For now, return invoice data that can be used to generate PDF on frontend
+  // Create PDF document
+  const doc = new PDFDocument({ size: "A4", margin: 50 });
 
-  ApiResponse.success(
-    res,
-    {
-      invoice,
-      message: "PDF generation to be implemented. Use this data for client-side PDF generation.",
-    },
-    "Invoice data fetched for PDF"
-  );
+  // Set response headers
+  const filename = `invoice-${invoice.invoiceNumber || id}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  // Pipe PDF to response
+  doc.pipe(res);
+
+  const leftMargin = 50;
+  const pageWidth = doc.page.width - 100;
+
+  // --- Clinic Header ---
+  doc.fontSize(20).font("Helvetica-Bold");
+  if (invoice.clinic?.name) {
+    doc.text(invoice.clinic.name, leftMargin, 50, { align: "center" });
+  }
+  doc.fontSize(10).font("Helvetica");
+  if (invoice.clinic?.address) {
+    const addr = invoice.clinic.address;
+    const addressParts = [addr.street, addr.area, addr.city, addr.state, addr.pincode].filter(Boolean);
+    if (addressParts.length) {
+      doc.text(addressParts.join(", "), { align: "center" });
+    }
+  }
+  if (invoice.clinic?.phone) {
+    doc.text(`Phone: ${invoice.clinic.phone}`, { align: "center" });
+  }
+
+  doc.moveDown(1.5);
+  doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+  doc.moveDown(1);
+
+  // --- Invoice Title ---
+  doc.fontSize(16).font("Helvetica-Bold").text("INVOICE", { align: "center" });
+  doc.moveDown(0.5);
+
+  // --- Invoice Details & Patient Info (two columns) ---
+  const detailsY = doc.y;
+
+  // Left column - Invoice details
+  doc.fontSize(10).font("Helvetica-Bold").text("Invoice Details", leftMargin, detailsY);
+  doc.moveDown(0.3);
+  doc.font("Helvetica");
+  doc.text(`Invoice #: ${invoice.invoiceNumber || "N/A"}`);
+  doc.text(`Date: ${invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString("en-IN") : "N/A"}`);
+  doc.text(`Due Date: ${invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString("en-IN") : "N/A"}`);
+  doc.text(`Status: ${(invoice.status || "").toUpperCase()}`);
+
+  const afterLeftCol = doc.y;
+
+  // Right column - Patient info
+  const rightCol = leftMargin + pageWidth / 2 + 20;
+  doc.fontSize(10).font("Helvetica-Bold").text("Bill To", rightCol, detailsY);
+  doc.moveDown(0.3);
+  doc.font("Helvetica");
+  if (invoice.patient?.name) doc.text(invoice.patient.name, rightCol);
+  if (invoice.patient?.phone) doc.text(`Phone: ${invoice.patient.phone}`, rightCol);
+  if (invoice.patient?.email) doc.text(`Email: ${invoice.patient.email}`, rightCol);
+  if (invoice.patient?.address) {
+    const pAddr = invoice.patient.address;
+    const parts = [pAddr.street, pAddr.city, pAddr.state, pAddr.pincode].filter(Boolean);
+    if (parts.length) doc.text(parts.join(", "), rightCol);
+  }
+
+  doc.y = Math.max(afterLeftCol, doc.y) + 20;
+
+  // --- Items Table ---
+  doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+  doc.moveDown(0.5);
+
+  const tableTop = doc.y;
+  const colWidths = { description: 160, qty: 40, unitPrice: 70, discount: 60, tax: 60, total: 75 };
+
+  let xPos = leftMargin;
+  doc.fontSize(9).font("Helvetica-Bold");
+  doc.text("Description", xPos, tableTop, { width: colWidths.description });
+  xPos += colWidths.description;
+  doc.text("Qty", xPos, tableTop, { width: colWidths.qty, align: "right" });
+  xPos += colWidths.qty;
+  doc.text("Unit Price", xPos, tableTop, { width: colWidths.unitPrice, align: "right" });
+  xPos += colWidths.unitPrice;
+  doc.text("Discount", xPos, tableTop, { width: colWidths.discount, align: "right" });
+  xPos += colWidths.discount;
+  doc.text("Tax", xPos, tableTop, { width: colWidths.tax, align: "right" });
+  xPos += colWidths.tax;
+  doc.text("Total", xPos, tableTop, { width: colWidths.total, align: "right" });
+
+  doc.moveDown(0.5);
+  doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+  doc.moveDown(0.3);
+
+  // Table rows
+  doc.font("Helvetica").fontSize(9);
+  const items = invoice.items || [];
+  for (const item of items) {
+    const rowY = doc.y;
+    xPos = leftMargin;
+
+    doc.text(item.description || "", xPos, rowY, { width: colWidths.description });
+    xPos += colWidths.description;
+    doc.text(String(item.quantity ?? ""), xPos, rowY, { width: colWidths.qty, align: "right" });
+    xPos += colWidths.qty;
+    doc.text((item.unitPrice ?? 0).toFixed(2), xPos, rowY, { width: colWidths.unitPrice, align: "right" });
+    xPos += colWidths.unitPrice;
+    doc.text(((item.discount?.amount) ?? 0).toFixed(2), xPos, rowY, { width: colWidths.discount, align: "right" });
+    xPos += colWidths.discount;
+    doc.text((item.taxAmount ?? 0).toFixed(2), xPos, rowY, { width: colWidths.tax, align: "right" });
+    xPos += colWidths.tax;
+    doc.text((item.total ?? 0).toFixed(2), xPos, rowY, { width: colWidths.total, align: "right" });
+
+    doc.moveDown(0.5);
+  }
+
+  doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+  doc.moveDown(1);
+
+  // --- Totals Section ---
+  const totalsX = leftMargin + pageWidth - 200;
+  const valuesX = leftMargin + pageWidth - 80;
+
+  doc.font("Helvetica").fontSize(10);
+  doc.text("Subtotal:", totalsX, doc.y);
+  doc.text(`₹${(invoice.subtotal ?? 0).toFixed(2)}`, valuesX, doc.y - doc.currentLineHeight(), { width: 80, align: "right" });
+
+  if (invoice.discount?.amount > 0) {
+    const discLabel = invoice.discount.percentage ? `Discount (${invoice.discount.percentage}%):` : "Discount:";
+    doc.text(discLabel, totalsX, doc.y);
+    doc.text(`-₹${(invoice.discount.amount ?? 0).toFixed(2)}`, valuesX, doc.y - doc.currentLineHeight(), { width: 80, align: "right" });
+  }
+
+  if (invoice.totalTax > 0) {
+    doc.text("Tax:", totalsX, doc.y);
+    doc.text(`₹${(invoice.totalTax ?? 0).toFixed(2)}`, valuesX, doc.y - doc.currentLineHeight(), { width: 80, align: "right" });
+  }
+
+  doc.moveDown(0.3);
+  doc.moveTo(totalsX, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#333333");
+  doc.moveDown(0.3);
+
+  doc.font("Helvetica-Bold").fontSize(12);
+  doc.text("Grand Total:", totalsX, doc.y);
+  doc.text(`₹${(invoice.grandTotal ?? 0).toFixed(2)}`, valuesX, doc.y - doc.currentLineHeight(), { width: 80, align: "right" });
+
+  doc.moveDown(1);
+
+  // --- Payment Info ---
+  doc.font("Helvetica").fontSize(10);
+  doc.text(`Payment Status: ${(invoice.paymentStatus || "unpaid").toUpperCase()}`, leftMargin);
+  doc.text(`Amount Paid: ₹${(invoice.amountPaid ?? 0).toFixed(2)}`, leftMargin);
+  doc.font("Helvetica-Bold");
+  doc.text(`Balance Due: ₹${(invoice.balanceDue ?? 0).toFixed(2)}`, leftMargin);
+  doc.moveDown(1);
+
+  // --- Notes ---
+  if (invoice.notes) {
+    doc.font("Helvetica-Bold").fontSize(10).text("Notes:", leftMargin);
+    doc.font("Helvetica").fontSize(9).text(invoice.notes, leftMargin, doc.y, { width: pageWidth });
+  }
+
+  // --- Footer ---
+  doc.moveDown(2);
+  doc.fontSize(8).font("Helvetica").fillColor("#999999");
+  doc.text("Thank you for choosing our clinic. This is a computer-generated invoice.", leftMargin, doc.y, { align: "center", width: pageWidth });
+
+  doc.end();
+});
+
+// ==================== DELETE ====================
+
+/**
+ * @desc    Permanently delete an invoice
+ * @route   DELETE /api/billing/invoices/:id
+ * @access  Admin
+ */
+export const deleteInvoice = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid invoice ID", 400);
+  }
+
+  const invoice = await Invoice.findById(id);
+
+  if (!invoice) {
+    return ApiResponse.error(res, "Invoice not found", 404);
+  }
+
+  // Only allow deleting draft or cancelled invoices
+  if (!["draft", "cancelled"].includes(invoice.status)) {
+    return ApiResponse.error(
+      res,
+      "Only draft or cancelled invoices can be permanently deleted",
+      400
+    );
+  }
+
+  await Invoice.findByIdAndDelete(id);
+
+  ApiResponse.success(res, null, "Invoice deleted permanently");
 });

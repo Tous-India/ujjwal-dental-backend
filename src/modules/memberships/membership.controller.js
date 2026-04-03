@@ -495,6 +495,125 @@ export const getActiveMembers = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Purchase membership (patient self-service after payment)
+ * @route   POST /api/memberships/purchase
+ * @access  Patient (authenticated)
+ */
+export const purchaseMembership = asyncHandler(async (req, res) => {
+  const { planId, paymentId, name, phone, email } = req.body;
+
+  // Patient from auth middleware (logged in) or find/create from request body
+  let patient = req.patient;
+
+  if (!patient && phone) {
+    // Public purchase — find or create patient
+    patient = await Patient.findOne({ phone });
+    if (!patient && email) {
+      patient = await Patient.findOne({ email: email.toLowerCase() });
+    }
+    if (!patient) {
+      if (!name) {
+        return ApiResponse.error(res, "Name is required for new patient", 400);
+      }
+      const autoPassword = (name.replace(/\s/g, "").slice(0, 4) + phone.slice(-4)) || "Patient@123";
+      patient = await Patient.create({
+        name,
+        phone,
+        email: email?.toLowerCase(),
+        password: autoPassword,
+      });
+
+      // Send welcome email
+      if (email) {
+        const { sendEmail } = await import("../../utils/email.js");
+        sendEmail({
+          to: email,
+          subject: "Welcome to Ujjwal Dental Clinic - Your Portal Login",
+          html: `<div style="font-family:Arial;max-width:500px;margin:0 auto;padding:20px"><h2 style="color:#1976d2;text-align:center">Ujjwal Dental Clinic</h2><p>Hello ${name},</p><p>Your patient portal account has been created.</p><div style="background:#f5f5f5;padding:16px;border-radius:8px;margin:20px 0"><p><strong>Email:</strong> ${email}</p><p><strong>Password:</strong> ${autoPassword}</p></div><p>Login at your patient portal to view your membership details.</p></div>`,
+          text: `Hello ${name}, Your account: Email: ${email}, Password: ${autoPassword}`,
+        }).catch((err) => console.error("[Membership] Welcome email error:", err));
+      }
+    }
+  }
+
+  if (!patient) {
+    return ApiResponse.error(res, "Patient information is required. Please provide name, phone, and email.", 400);
+  }
+
+  // Validation
+  if (!planId) {
+    return ApiResponse.error(res, "Plan ID is required", 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(planId)) {
+    return ApiResponse.error(res, "Invalid plan ID", 400);
+  }
+
+  // Get plan
+  const plan = await MembershipPlan.findById(planId);
+  if (!plan) {
+    return ApiResponse.error(res, "Membership plan not found", 404);
+  }
+
+  if (!plan.isActive) {
+    return ApiResponse.error(res, "This membership plan is no longer available", 400);
+  }
+
+  // Check if patient already has active membership
+  if (patient.hasMembership) {
+    return ApiResponse.error(
+      res,
+      "You already have an active membership. Please wait for it to expire or contact support.",
+      400
+    );
+  }
+
+  // Calculate dates
+  const startDate = new Date();
+  const expiryDate = new Date();
+  expiryDate.setMonth(expiryDate.getMonth() + plan.durationMonths);
+
+  // If patient has old membership, move it to history
+  if (patient.membership && patient.membership.plan) {
+    patient.membershipHistory.push({
+      ...patient.membership.toObject(),
+      status: "expired",
+    });
+  }
+
+  // Assign new membership
+  patient.membership = {
+    plan: plan._id,
+    planName: plan.name,
+    discountPercent: plan.discountPercentage,
+    startDate,
+    expiryDate,
+    status: "active",
+  };
+
+  await patient.save();
+
+  // Populate membership plan for response
+  await patient.populate("membership.plan");
+
+  ApiResponse.success(
+    res,
+    {
+      patient: {
+        _id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+        membership: patient.membership,
+        hasMembership: patient.hasMembership,
+        currentDiscount: patient.currentDiscount,
+      },
+      paymentId,
+    },
+    "Membership purchased successfully"
+  );
+});
+
+/**
  * @desc    Get membership statistics
  * @route   GET /api/memberships/stats
  * @access  Admin

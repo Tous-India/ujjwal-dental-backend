@@ -23,7 +23,7 @@ const router = Router();
 // ==================== REPORT CRUD ====================
 
 // Get all reports (with filters) - Admin
-router.get("/", authProtect, reportController.getAllReports);
+router.get("/",reportController.getAllReports);// authProtect, 
 
 // Get report by report number
 router.get("/number/:reportNumber", anyAuth, reportController.getReportByNumber);
@@ -56,10 +56,10 @@ router.get("/:id/download", anyAuth, reportController.downloadReport);
 
 // ==================== PATIENT REPORTS ====================
 
-// Get all reports for a patient
-router.get("/patient/:patientId", authProtect, reportController.getPatientReports);
+// Get all reports for a patient (both admin and patient can access)
+router.get("/patient/:patientId", anyAuth, reportController.getPatientReports);
 
-// Get patient reports by category
-router.get("/patient/:patientId/category/:category", authProtect, reportController.getPatientReportsByCategory);
+// Get patient reports by category (both admin and patient can access)
+router.get("/patient/:patientId/category/:category", anyAuth, reportController.getPatientReportsByCategory);
 
 export default router;

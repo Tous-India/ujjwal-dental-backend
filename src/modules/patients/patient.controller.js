@@ -6,6 +6,7 @@ import { Treatment } from "../treatments/treatment.model.js";
 import Payment from "../payments/payment.model.js";
 import Report from "../reports/report.model.js";
 import Invoice from "../billing/invoice.model.js";
+import Test from "../tests/test.model.js";
 
 /**
  * PATIENT CONTROLLER
@@ -456,6 +457,48 @@ export const getPatientReports = asyncHandler(async (req, res) => {
   ]);
 
   ApiResponse.paginated(res, reports, {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    total,
+    totalPages: Math.ceil(total / parseInt(limit)),
+  });
+});
+
+/**
+ * @desc    Get patient's tests
+ * @route   GET /api/patients/:id/tests
+ * @access  Admin
+ */
+export const getPatientTests = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { status, page = 1, limit = 10 } = req.query;
+
+  // Verify patient exists
+  const patient = await Patient.findById(id);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  // Build query
+  const query = { patient: id };
+  if (status) {
+    query.status = status;
+  }
+
+  // Get tests
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const [tests, total] = await Promise.all([
+    Test.find(query)
+      .populate("testType", "name code category price")
+      .populate("clinic", "name code")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit)),
+    Test.countDocuments(query),
+  ]);
+
+  ApiResponse.paginated(res, tests, {
     page: parseInt(page),
     limit: parseInt(limit),
     total,

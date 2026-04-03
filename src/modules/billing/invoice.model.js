@@ -232,38 +232,32 @@ invoiceSchema.index({ paymentStatus: 1 });
 /**
  * Generate invoice number and calculate totals
  */
-invoiceSchema.pre("save", async function (next) {
-  try {
-    // Generate invoice number for new documents
-    if (this.isNew) {
-      const date = new Date();
-      const year = date.getFullYear().toString().slice(-2);
-      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+invoiceSchema.pre("save", async function () {
+  // Generate invoice number for new documents
+  if (this.isNew) {
+    const date = new Date();
+    const year = date.getFullYear().toString().slice(-2);
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
 
-      // Count invoices this month
-      const count = await mongoose.model("Invoice").countDocuments({
-        createdAt: {
-          $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-          $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-        },
-      });
+    // Count invoices this month
+    const count = await mongoose.model("Invoice").countDocuments({
+      createdAt: {
+        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
+        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
+      },
+    });
 
-      const serial = (count + 1).toString().padStart(4, "0");
-      this.invoiceNumber = `INV-${year}${month}-${serial}`;
+    const serial = (count + 1).toString().padStart(4, "0");
+    this.invoiceNumber = `INV-${year}${month}-${serial}`;
 
-      // Set default due date (7 days from invoice date)
-      if (!this.dueDate) {
-        this.dueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      }
+    // Set default due date (7 days from invoice date)
+    if (!this.dueDate) {
+      this.dueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
-
-    // Calculate totals
-    this.calculateTotals();
-
-    next();
-  } catch (error) {
-    next(error);
   }
+
+  // Calculate totals
+  this.calculateTotals();
 });
 
 // ============ METHODS ============

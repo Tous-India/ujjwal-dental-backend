@@ -14,19 +14,17 @@ import mongoose from "mongoose";
 
 const paymentSchema = new mongoose.Schema(
   {
-    // Unique payment number
+    // Unique payment number (auto-generated in pre-save)
     paymentNumber: {
       type: String,
-      required: true,
       unique: true,
       index: true,
     },
 
-    // Patient who made the payment
+    // Patient who made the payment (optional for online booking - linked after payment)
     patient: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Patient",
-      required: [true, "Patient is required"],
     },
 
     // Invoice being paid (optional - can be advance payment)
@@ -41,11 +39,10 @@ const paymentSchema = new mongoose.Schema(
       ref: "Appointment",
     },
 
-    // Clinic where payment was made
+    // Clinic where payment was made (optional for online membership purchases)
     clinic: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Clinic",
-      required: [true, "Clinic is required"],
     },
 
     // Payment amount
@@ -72,8 +69,18 @@ const paymentSchema = new mongoose.Schema(
     // Payment type
     type: {
       type: String,
-      enum: ["invoice_payment", "advance", "membership", "refund", "opd_fee"],
-      default: "invoice_payment",
+      enum: [
+        "opd_fee",
+        "consultation",
+        "treatment",
+        "test",
+        "invoice_payment",
+        "advance",
+        "membership",
+        "refund",
+        "other",
+      ],
+      default: "opd_fee",
     },
 
     // Payment date
@@ -136,31 +143,25 @@ paymentSchema.index({ razorpayOrderId: 1 });
 // ============ PRE-SAVE MIDDLEWARE ============
 
 /**
- * Generate payment number
+ * Generate payment number (Mongoose 6.x+ async middleware - no next() needed)
  */
-paymentSchema.pre("save", async function (next) {
-  try {
-    // Generate payment number for new documents
-    if (this.isNew) {
-      const date = new Date();
-      const year = date.getFullYear().toString().slice(-2);
-      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+paymentSchema.pre("save", async function () {
+  // Generate payment number for new documents
+  if (this.isNew && !this.paymentNumber) {
+    const date = new Date();
+    const year = date.getFullYear().toString().slice(-2);
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
 
-      // Count payments this month
-      const count = await mongoose.model("Payment").countDocuments({
-        createdAt: {
-          $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-          $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-        },
-      });
+    // Count payments this month
+    const count = await mongoose.model("Payment").countDocuments({
+      createdAt: {
+        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
+        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
+      },
+    });
 
-      const serial = (count + 1).toString().padStart(4, "0");
-      this.paymentNumber = `PAY-${year}${month}-${serial}`;
-    }
-
-    next();
-  } catch (error) {
-    next(error);
+    const serial = (count + 1).toString().padStart(4, "0");
+    this.paymentNumber = `PAY-${year}${month}-${serial}`;
   }
 });
 

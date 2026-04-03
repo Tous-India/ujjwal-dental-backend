@@ -59,37 +59,17 @@ export const getClinicById = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const createClinic = asyncHandler(async (req, res) => {
-  const { name, code, address, phone, operatingHours, appointmentSettings } = req.body;
+  const { name, address, phone } = req.body;
 
   // Validate required fields
-  if (!name || !code) {
-    return ApiResponse.error(res, "Clinic name and code are required", 400);
+  if (!name) {
+    return ApiResponse.error(res, "Clinic name is required", 400);
   }
-
-  // Check if code already exists
-  const existingClinic = await Clinic.findOne({ code: code.toUpperCase() });
-  if (existingClinic) {
-    return ApiResponse.error(res, "Clinic with this code already exists", 409);
-  }
-
-  // Create clinic with default operating hours if not provided
-  const defaultOperatingHours = [
-    { dayOfWeek: 0, isOpen: false }, // Sunday closed
-    { dayOfWeek: 1, isOpen: true, openTime: "09:00", closeTime: "20:00" },
-    { dayOfWeek: 2, isOpen: true, openTime: "09:00", closeTime: "20:00" },
-    { dayOfWeek: 3, isOpen: true, openTime: "09:00", closeTime: "20:00" },
-    { dayOfWeek: 4, isOpen: true, openTime: "09:00", closeTime: "20:00" },
-    { dayOfWeek: 5, isOpen: true, openTime: "09:00", closeTime: "20:00" },
-    { dayOfWeek: 6, isOpen: true, openTime: "09:00", closeTime: "14:00" }, // Saturday half day
-  ];
 
   const clinic = await Clinic.create({
     name,
-    code: code.toUpperCase(),
     address,
-    phone: Array.isArray(phone) ? phone : [phone],
-    operatingHours: operatingHours || defaultOperatingHours,
-    appointmentSettings,
+    phone,
   });
 
   ApiResponse.created(res, { clinic }, "Clinic created successfully");
@@ -144,6 +124,23 @@ export const removeClinic = asyncHandler(async (req, res) => {
   await clinic.save();
 
   ApiResponse.success(res, null, "Clinic deactivated successfully");
+});
+
+/**
+ * @desc    Permanently delete clinic
+ * @route   DELETE /api/clinics/:id/permanent
+ * @access  Admin
+ */
+export const permanentDeleteClinic = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const clinic = await Clinic.findById(id);
+  if (!clinic) {
+    return ApiResponse.error(res, "Clinic not found", 404);
+  }
+
+  await Clinic.findByIdAndDelete(id);
+  ApiResponse.success(res, null, "Clinic deleted permanently");
 });
 
 /**

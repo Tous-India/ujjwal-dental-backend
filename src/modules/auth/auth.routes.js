@@ -36,6 +36,9 @@ router.post("/login", authController.login);
 // Patient login - sends OTP to phone
 router.post("/patient/login", authController.patientLogin);
 
+// Patient login with password (given by doctor)
+router.post("/patient/login-password", authController.patientLoginPassword);
+
 // Patient verify OTP
 router.post("/patient/verify-otp", authController.verifyOtp);
 

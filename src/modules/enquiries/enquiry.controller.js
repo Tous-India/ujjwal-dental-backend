@@ -206,6 +206,32 @@ export const submitEnquiry = async (req, res) => {
       source,
     });
 
+    // Send email notification to admin
+    try {
+      const { sendEmail } = await import("../../utils/email.js");
+      sendEmail({
+        to: process.env.SMTP_USER,
+        subject: `New Enquiry: ${name} - ${treatmentName || "General"}`,
+        html: `
+          <div style="font-family:Arial;max-width:500px;margin:0 auto;padding:20px">
+            <h2 style="color:#1976d2">New Contact Form Submission</h2>
+            <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin:16px 0">
+              <p><strong>Name:</strong> ${name}</p>
+              <p><strong>Phone:</strong> ${phone}</p>
+              <p><strong>Email:</strong> ${email || "Not provided"}</p>
+              <p><strong>Subject:</strong> ${treatmentName || "General"}</p>
+              <p><strong>Message:</strong> ${message || "No message"}</p>
+              <p><strong>Enquiry #:</strong> ${enquiry.enquiryNumber}</p>
+            </div>
+            <p style="color:#666;font-size:12px">View in admin panel: Enquiries section</p>
+          </div>
+        `,
+        text: `New enquiry from ${name} (${phone}). Subject: ${treatmentName}. Message: ${message}`,
+      }).catch((err) => console.error("[Enquiry] Email notification error:", err));
+    } catch (err) {
+      console.error("[Enquiry] Email import error:", err);
+    }
+
     return ApiResponse.success(
       res,
       {

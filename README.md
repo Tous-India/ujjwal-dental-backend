@@ -7,11 +7,11 @@ Complete backend API for the Ujjwal Dental Clinic Management System.
 - **Runtime:** Node.js
 - **Framework:** Express 5.x
 - **Database:** MongoDB with Mongoose
-- **Authentication:** JWT (Admin), OTP-based (Patients)
+- **Authentication:** JWT (Admin), Email OTP (Patients - Passwordless)
 - **Validation:** Zod
 - **File Upload:** Multer + Cloudinary
 - **Payments:** Razorpay
-- **Email:** Nodemailer
+- **Email:** Nodemailer (OTP delivery + notifications)
 
 ## Quick Start
 
@@ -22,9 +22,20 @@ npm install
 # Create .env file (copy from .env.example)
 cp .env.example .env
 
+# Seed database (optional)
+# Seed admin user
+node src/seeds/index.js
+
+# Seed sample notifications
+node src/seeds/notifications.seed.js
+
 # Start development server
 npm run dev
 ```
+
+**Default Admin Credentials:**
+- Email: `admin@ujjwaldental.com`
+- Password: `Admin@123`
 
 ## Project Structure
 
@@ -59,7 +70,14 @@ backend/
 │   ├── utils/               # Utilities
 │   │   ├── ApiResponse.js   # Standardized responses
 │   │   ├── AppError.js      # Custom error classes
-│   │   └── asyncHandler.js  # Async wrapper
+│   │   ├── asyncHandler.js  # Async wrapper
+│   │   └── email.js         # Email sending utilities (OTP, notifications)
+│   ├── seeds/               # Database seed files
+│   │   ├── index.js         # Seed admin user
+│   │   ├── clinics.seed.js  # Seed clinic locations
+│   │   ├── patients.seed.js # Seed sample patients
+│   │   ├── notifications.seed.js # Seed sample notifications
+│   │   └── set-patient-password.js # Set patient password utility
 │   └── routes.js            # Main router
 ├── app.js                   # Express app
 ├── server.js                # Entry point
@@ -77,8 +95,9 @@ Base URL: `http://localhost:5000/api`
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
 | POST | `/login` | Public | Admin login with email/password |
-| POST | `/patient/login` | Public | Patient login (sends OTP) |
-| POST | `/patient/verify-otp` | Public | Verify patient OTP |
+| POST | `/patient/login` | Public | Patient login - Request OTP via email |
+| POST | `/patient/verify-otp` | Public | Verify patient OTP and get JWT |
+| POST | `/patient/resend-otp` | Public | Resend OTP to email |
 | POST | `/refresh-token` | Auth | Refresh access token |
 | POST | `/logout` | Auth | Logout user |
 | POST | `/forgot-password` | Public | Request password reset |
@@ -380,6 +399,73 @@ Base URL: `http://localhost:5000/api`
 - Auto-generated thumbnails
 - Secure URL generation
 
+### Enquiries/Leads (`/api/enquiries`)
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| POST | `/` | Public | Submit enquiry (from website) |
+| GET | `/` | Admin | List all enquiries with filters |
+| GET | `/stats` | Admin | Enquiry statistics by status/treatment/source |
+| GET | `/today` | Admin | Today's enquiries |
+| GET | `/pending-follow-ups` | Admin | Pending follow-ups |
+| GET | `/:id` | Admin | Get enquiry details |
+| PATCH | `/:id` | Admin | Update enquiry info |
+| DELETE | `/:id` | Admin | Delete enquiry |
+| PATCH | `/:id/status` | Admin | Change status (with note) |
+| PATCH | `/:id/assign` | Admin | Assign to staff member |
+| PATCH | `/:id/follow-up` | Admin | Schedule follow-up |
+| PATCH | `/:id/spam` | Admin | Mark/unmark as spam |
+| PATCH | `/:id/convert` | Admin | Convert to patient |
+| POST | `/:id/notes` | Admin | Add internal note |
+
+### Settings (`/api/settings`)
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| GET | `/fees` | Public | Get OPD fee settings |
+| PATCH | `/fees` | Admin | Update fee settings |
+| GET | `/profile` | Admin | Get admin profile |
+| PATCH | `/profile` | Admin | Update profile |
+| POST | `/profile/picture` | Admin | Upload profile picture |
+| PATCH | `/profile/password` | Admin | Change password |
+| GET | `/clinic` | Admin | Get clinic settings |
+| PATCH | `/clinic` | Admin | Update clinic settings |
+| GET | `/notifications` | Admin | Get notification preferences |
+| PATCH | `/notifications` | Admin | Update notification preferences |
+| GET | `/system` | Admin | Get system configuration |
+| PATCH | `/system` | Admin | Update system configuration |
+
+---
+
+## 📝 Recent Updates
+
+### Notification System (Latest)
+- ✅ Complete notification model with multi-channel support (in-app, email, SMS, WhatsApp)
+- ✅ Real-time unread count endpoint with efficient queries
+- ✅ Mark as read/unread functionality
+- ✅ Bulk notification sending
+- ✅ Scheduled notifications support
+- ✅ Notification types: appointments, payments, treatments, tests, memberships
+- ✅ Priority levels: normal, high, urgent
+- ✅ Auto-generated appointment and payment reminders
+
+### Email OTP Authentication
+- ✅ Passwordless patient login via email OTP
+- ✅ 6-digit OTP generation with 10-minute expiration
+- ✅ Nodemailer integration for reliable email delivery
+- ✅ Resend OTP functionality
+- ✅ Secure OTP verification with rate limiting
+
+### Payment & Billing Improvements
+- ✅ Date range filtering for payments
+- ✅ Payment statistics and daily collection reports
+- ✅ Enhanced payment metadata tracking
+
+### Bug Fixes
+- ✅ Fixed admin login 401 error (password double-hashing issue)
+- ✅ Fixed notification routes ordering (admin routes before :id routes)
+- ✅ Improved error handling across all modules
+
 ---
 
 ## User Roles
@@ -415,13 +501,14 @@ RAZORPAY_KEY_ID=rzp_test_xxxxx
 RAZORPAY_KEY_SECRET=your-secret
 RAZORPAY_WEBHOOK_SECRET=your-webhook-secret
 
-# Email (optional)
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASS=your-app-password
+# Email (Required for OTP and notifications)
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USER=your-email@gmail.com
+EMAIL_PASSWORD=your-app-password
+EMAIL_FROM=Ujjwal Dental Clinic <noreply@ujjwaldental.com>
 
-# SMS (optional)
+# SMS (optional - for future SMS integration)
 SMS_API_KEY=your-sms-api-key
 ```
 
@@ -460,11 +547,15 @@ SMS_API_KEY=your-sms-api-key
 | **Treatments** | 18 | Master Types + Patient Treatments + Sessions |
 | **Tests** | 10 | Master Types + Patient Tests |
 | **Memberships** | 9 | Plans + Assign/Renew/Cancel |
-| **Billing** | 7 | Invoices + Issue/Cancel/PDF |
-| **Payments** | 7 | Cash/UPI/Card/Razorpay/Refund |
-| **Reports** | 6 | CRUD + Download |
-| **Notifications** | 5 | List, Read, Send |
-| **TOTAL** | **110** | **Complete API Coverage** |
+| **Billing** | 14 | Invoices + Items + Issue/Cancel/Payment/PDF |
+| **Payments** | 13 | Cash/UPI/Card/Razorpay/Refund/Stats |
+| **Reports** | 12 | CRUD + Download + Tags + Visibility |
+| **Notifications** | 14 | List, Read, Send, Bulk, Reminders, Stats |
+| **Enquiries** | 15 | Lead pipeline, Follow-ups, Convert, Notes |
+| **Settings** | 12 | Profile, Clinic, Fees, Notifications, System |
+| **Uploads** | 6 | File management + Cloudinary |
+| **CMS** | 19 | Treatment pages, Sections, FAQs |
+| **TOTAL** | **180+** | **Complete API Coverage** |
 
 ---
 
@@ -559,9 +650,12 @@ Follow this order to test APIs properly (dependencies flow top to bottom):
 |------|-------|----------|
 | **Admin** | `admin@ujjwaldental.com` | `Admin@123` |
 
-| Role | Phone | OTP |
-|------|-------|-----|
-| **Patient** | `9812345678` | Generated via SMS |
+**Patient Login:**
+- Email-based OTP authentication (passwordless)
+- Enter patient's email address
+- Receive 6-digit OTP via email
+- OTP expires in 10 minutes
+- Can request new OTP if needed
 
 ---
 

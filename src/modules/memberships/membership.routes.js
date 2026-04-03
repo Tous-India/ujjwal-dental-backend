@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as membershipController from "./membership.controller.js";
-import { authProtect } from "../../middlewares/auth.middleware.js";
+import { authProtect, patientProtect, optionalAuth } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -38,6 +38,9 @@ router.delete("/plans/:id", authProtect, membershipController.deletePlan);
 router.post("/plans/seed", authProtect, membershipController.seedDefaultPlans);
 
 // ==================== PATIENT MEMBERSHIPS ====================
+
+// Purchase membership (Patient - after payment)
+router.post("/purchase", optionalAuth, membershipController.purchaseMembership);
 
 // Assign membership to patient (Admin)
 router.post("/assign", authProtect, membershipController.assignMembership);

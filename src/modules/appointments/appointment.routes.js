@@ -19,10 +19,13 @@ router.get("/today", appointmentController.getTodayAppointments);
 router.get("/upcoming", appointmentController.getUpcomingAppointments);
 
 // Get available slots (for booking)
-// router.get('/available-slots', appointmentController.getAvailableSlots);
+router.get("/available-slots", appointmentController.getAvailableSlots);
 
 // Create new appointment (book)
 router.post("/", appointmentController.createAppointment);
+
+// Book appointment after payment (public - for online booking)
+router.post("/book-with-payment", appointmentController.bookAppointmentWithPayment);
 
 // Update appointment details
 router.patch("/:id", appointmentController.updateAppointment);
@@ -41,6 +44,9 @@ router.post("/:id/cancel", appointmentController.cancelAppointment  );
 
 // Reschedule appointment
 router.post("/:id/reschedule", appointmentController.rescheduleAppointment);
+
+// Delete appointment permanently (admin only)
+router.delete("/:id", authProtect, appointmentController.deleteAppointment);
 
 // Get single appointment by ID
 router.get("/:phone", appointmentController.getAppointmentsByPhone);

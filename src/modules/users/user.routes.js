@@ -30,6 +30,9 @@ router.post("/", userController.createUser);
 router.patch("/:id", userController.updateUser);
 
 // Delete (deactivate) user
-router.delete("/:id", userController.deleteUser);
+router.delete("/:id", authProtect, userController.deleteUser);
+
+// Permanently delete user
+router.delete("/:id/permanent", authProtect, userController.permanentDeleteUser);
 
 export default router;

@@ -136,6 +136,12 @@ const appointmentSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Is this a free appointment (no payment required)?
+    isFree: {
+      type: Boolean,
+      default: false,
+    },
+
     // Created by (staff who booked)
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -206,7 +212,9 @@ appointmentSchema.pre("save", async function () {
   });
 
   const serial = String(count + 1).padStart(4, "0");
-  this.appointmentNumber = `${clinic.code}-${year}${month}-${serial}`;
+  // Use clinic code if available, otherwise generate from clinic name
+  const clinicCode = clinic.code || clinic.name?.split(/[\s-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 3) || "UDC";
+  this.appointmentNumber = `${clinicCode}-${year}${month}-${serial}`;
 
   // Token number for the day
   const startOfDay = new Date(this.date);

@@ -44,7 +44,7 @@ const userSchema = new mongoose.Schema(
     // Role - keeping it simple with just 'admin'
     role: {
       type: String,
-      enum: ["admin"],
+      enum: ["admin", "user"],
       default: "admin",
     },
 
@@ -67,6 +67,26 @@ const userSchema = new mongoose.Schema(
     refreshToken: {
       type: String,
       select: false,
+    },
+
+    // Profile Picture (Cloudinary)
+    profilePicture: {
+      url: String,
+      publicId: String,
+    },
+
+    // Notification Preferences
+    notificationPreferences: {
+      email: {
+        appointments: { type: Boolean, default: true },
+        payments: { type: Boolean, default: true },
+        systemAlerts: { type: Boolean, default: true },
+      },
+      sms: {
+        appointments: { type: Boolean, default: false },
+        payments: { type: Boolean, default: false },
+        systemAlerts: { type: Boolean, default: false },
+      },
     },
   },
   {

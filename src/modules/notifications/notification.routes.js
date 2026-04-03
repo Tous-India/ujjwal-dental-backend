@@ -18,33 +18,7 @@ const router = Router();
  * Channels: App (in-app), Email, SMS
  */
 
-// ==================== USER NOTIFICATIONS ====================
-
-// Get all notifications for current user (Admin or Patient)
-router.get("/", anyAuth, notificationController.getAllNotifications);
-
-// Get unread count
-router.get("/unread-count", anyAuth, notificationController.getUnreadCount);
-
-// Get unread notifications only
-router.get("/unread", anyAuth, notificationController.getUnreadNotifications);
-
-// Get single notification by ID
-router.get("/:id", anyAuth, notificationController.getNotificationById);
-
-// Mark single notification as read
-router.patch("/:id/read", anyAuth, notificationController.markAsRead);
-
-// Mark single notification as unread
-router.patch("/:id/unread", anyAuth, notificationController.markAsUnread);
-
-// Mark all notifications as read
-router.patch("/mark-all-read", anyAuth, notificationController.markAllAsRead);
-
-// Delete notification
-router.delete("/:id", anyAuth, notificationController.deleteNotification);
-
-// ==================== ADMIN OPERATIONS ====================
+// ==================== ADMIN OPERATIONS (must come before :id routes) ====================
 
 // Get all notifications (Admin view - all users)
 router.get("/admin/all", authProtect, notificationController.getAllNotificationsAdmin);
@@ -63,5 +37,31 @@ router.post("/reminder/appointment", authProtect, notificationController.createA
 
 // Create payment reminder notification
 router.post("/reminder/payment", authProtect, notificationController.createPaymentReminder);
+
+// ==================== USER NOTIFICATIONS ====================
+
+// Get all notifications for current user (Admin or Patient)
+router.get("/", anyAuth, notificationController.getAllNotifications);
+
+// Get unread count
+router.get("/unread-count", anyAuth, notificationController.getUnreadCount);
+
+// Get unread notifications only
+router.get("/unread", anyAuth, notificationController.getUnreadNotifications);
+
+// Mark all notifications as read
+router.patch("/mark-all-read", anyAuth, notificationController.markAllAsRead);
+
+// Get single notification by ID (must come after static routes)
+router.get("/:id", anyAuth, notificationController.getNotificationById);
+
+// Mark single notification as read
+router.patch("/:id/read", anyAuth, notificationController.markAsRead);
+
+// Mark single notification as unread
+router.patch("/:id/unread", anyAuth, notificationController.markAsUnread);
+
+// Delete notification
+router.delete("/:id", anyAuth, notificationController.deleteNotification);
 
 export default router;

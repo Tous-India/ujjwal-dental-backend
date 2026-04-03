@@ -12,6 +12,7 @@ import membershipRoutes from "./modules/memberships/membership.routes.js";
 import billingRoutes from "./modules/billing/billing.routes.js";
 import paymentRoutes from "./modules/payments/payment.routes.js";
 import reportRoutes from "./modules/reports/report.routes.js";
+import settingsRoutes from "./modules/settings/settings.routes.js";
 import notificationRoutes from "./modules/notifications/notification.routes.js";
 import uploadRoutes from "./modules/uploads/upload.routes.js";
 import enquiryRoutes from "./modules/enquiries/enquiry.routes.js";
@@ -153,6 +154,19 @@ router.use("/payments", paymentRoutes);
 // GET    /api/reports/:id/download      - Download PDF
 router.use("/reports", reportRoutes);
 
+// ========== SETTINGS ==========
+// GET    /api/settings/profile              - Get admin profile
+// PATCH  /api/settings/profile              - Update profile
+// POST   /api/settings/profile/picture      - Upload profile picture
+// PATCH  /api/settings/profile/password     - Change password
+// GET    /api/settings/clinic               - Get clinic settings
+// PATCH  /api/settings/clinic               - Update clinic settings
+// GET    /api/settings/notifications        - Get notification prefs
+// PATCH  /api/settings/notifications        - Update notification prefs
+// GET    /api/settings/system               - Get system config
+// PATCH  /api/settings/system               - Update system config
+router.use("/settings", settingsRoutes);
+
 // ========== NOTIFICATIONS ==========
 // GET    /api/notifications             - List notifications
 // GET    /api/notifications/unread-count
@@ -218,6 +232,7 @@ router.get("/", (req, res) => {
       billing: "/api/billing",
       payments: "/api/payments",
       reports: "/api/reports",
+      settings: "/api/settings",
       notifications: "/api/notifications",
       uploads: "/api/uploads",
       enquiries: "/api/enquiries",

@@ -18,8 +18,11 @@ router.post("/", clinicController.createClinic);
 // Update clinic (Admin only)
 router.patch("/:id", clinicController.updateClinic);
 
-// soft delete clinics (public - for appointment booking)
+// Soft delete (deactivate) clinic
 router.delete("/:id", clinicController.removeClinic);
+
+// Hard delete (permanent) clinic
+router.delete("/:id/permanent", clinicController.permanentDeleteClinic);
 
 // Get single clinic by ID
 // router.get('/:id', clinicController.getClinicById);

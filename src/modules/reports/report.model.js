@@ -160,44 +160,39 @@ reportSchema.index({ tags: 1 });
 
 /**
  * Generate report number before saving
+ * Note: In Mongoose 5+, async middleware should not use next()
  */
-reportSchema.pre("save", async function (next) {
-  try {
-    // Generate report number for new documents
-    if (this.isNew) {
-      const date = new Date();
-      const year = date.getFullYear().toString().slice(-2);
-      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+reportSchema.pre("save", async function () {
+  // Generate report number for new documents
+  if (this.isNew) {
+    const date = new Date();
+    const year = date.getFullYear().toString().slice(-2);
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
 
-      // Prefix based on category
-      const prefixes = {
-        xray: "XRY",
-        opg: "OPG",
-        cbct: "CBT",
-        lab_report: "LAB",
-        prescription: "RX",
-        treatment_plan: "TP",
-        consent_form: "CF",
-        other: "RPT",
-      };
+    // Prefix based on category
+    const prefixes = {
+      xray: "XRY",
+      opg: "OPG",
+      cbct: "CBT",
+      lab_report: "LAB",
+      prescription: "RX",
+      treatment_plan: "TP",
+      consent_form: "CF",
+      other: "RPT",
+    };
 
-      const prefix = prefixes[this.category] || "RPT";
+    const prefix = prefixes[this.category] || "RPT";
 
-      // Count reports this month
-      const count = await mongoose.model("Report").countDocuments({
-        createdAt: {
-          $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-          $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-        },
-      });
+    // Count reports this month
+    const count = await mongoose.model("Report").countDocuments({
+      createdAt: {
+        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
+        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
+      },
+    });
 
-      const serial = (count + 1).toString().padStart(4, "0");
-      this.reportNumber = `${prefix}-${year}${month}-${serial}`;
-    }
-
-    next();
-  } catch (error) {
-    next(error);
+    const serial = (count + 1).toString().padStart(4, "0");
+    this.reportNumber = `${prefix}-${year}${month}-${serial}`;
   }
 });
 

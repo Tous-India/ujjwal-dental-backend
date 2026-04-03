@@ -39,6 +39,9 @@ router.get('/:id/payments', patientController.getPatientPayments);
 // Get patient's reports
 router.get('/:id/reports', patientController.getPatientReports);
 
+// Get patient's tests
+router.get('/:id/tests', patientController.getPatientTests);
+
 // Get patient's membership details
 router.get('/:id/membership', patientController.getPatientMembership);
 

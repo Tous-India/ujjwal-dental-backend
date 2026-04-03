@@ -263,7 +263,7 @@ const treatmentPageSchema = new mongoose.Schema(
 
 // ============ INDEXES ============
 
-treatmentPageSchema.index({ slug: 1 });
+// treatmentPageSchema.index({ slug: 1 });
 treatmentPageSchema.index({ isPublished: 1 });
 treatmentPageSchema.index({ title: "text", shortDescription: "text" });
 

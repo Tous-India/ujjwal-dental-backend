@@ -7,7 +7,13 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "seed": "node src/seeds/index.js"
+    "seed": "node src/seeds/index.js",
+    "seed:patients": "node src/seeds/patients.seed.js",
+    "seed:notifications": "node src/seeds/notifications.seed.js",
+    "seed:clinics": "node src/seeds/clinics.seed.js",
+    "test": "vitest run --config vitest.config.js",
+    "test:watch": "vitest --config vitest.config.js",
+    "test:coverage": "vitest run --coverage --config vitest.config.js"
   },
   "keywords": [
     "dental",
@@ -34,5 +40,10 @@
     "razorpay": "^2.9.6",
     "uuid": "^13.0.0",
     "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.0"
   }
 }

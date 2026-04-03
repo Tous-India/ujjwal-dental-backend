@@ -369,18 +369,16 @@ export const downloadReport = asyncHandler(async (req, res) => {
     }
   }
 
-  // For public files, redirect directly to Cloudinary URL
-  // For private files, generate signed URL
-  const downloadUrl = report.file.url;
+  // Generate signed URL for secure access
+  const { getSignedUrl } = await import("../../middlewares/upload.middleware.js");
+  const signedUrl = report.file.publicId
+    ? getSignedUrl(report.file.publicId, !report.file.fileType?.startsWith("image"))
+    : report.file.url;
 
-  // Option 1: Redirect to Cloudinary URL
-  // res.redirect(downloadUrl);
-
-  // Option 2: Return URL for frontend to handle
   ApiResponse.success(
     res,
     {
-      downloadUrl,
+      downloadUrl: signedUrl,
       fileName: report.file.fileName,
       fileType: report.file.fileType,
     },

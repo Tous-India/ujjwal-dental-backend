@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as paymentController from "./payment.controller.js";
-import { authProtect, anyAuth } from "../../middlewares/auth.middleware.js";
+import { authProtect, anyAuth, optionalAuth } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -46,13 +46,18 @@ router.post("/membership", authProtect, paymentController.recordMembershipPaymen
 // ==================== RAZORPAY INTEGRATION ====================
 
 // Create Razorpay order
-router.post("/razorpay/create-order", anyAuth, paymentController.createRazorpayOrder);
+router.post("/razorpay/create-order", optionalAuth, paymentController.createRazorpayOrder);
 
 // Verify Razorpay payment
-router.post("/razorpay/verify", anyAuth, paymentController.verifyRazorpayPayment);
+router.post("/razorpay/verify", optionalAuth, paymentController.verifyRazorpayPayment);
 
 // Razorpay webhook (for async payment updates) - No auth, verified by signature
 router.post("/razorpay/webhook", paymentController.razorpayWebhook);
+
+// ==================== DELETE ====================
+
+// Permanently delete a payment - Admin
+router.delete("/:id", authProtect, paymentController.deletePayment);
 
 // ==================== REFUNDS ====================
 

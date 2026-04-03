@@ -282,14 +282,16 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
  * @access  Admin / Patient
  */
 export const createRazorpayOrder = asyncHandler(async (req, res) => {
-  const { invoiceId, amount, patient, clinic, type } = req.body;
+  const { invoiceId, amount, patient, clinic, type, isOnlineBooking } = req.body;
 
   // Validation
   if (!amount || amount <= 0) {
     return ApiResponse.error(res, "Valid amount is required", 400);
   }
 
-  if (!patient || !clinic) {
+  // For online booking/membership, patient and clinic are optional
+  // For other payments, both are required
+  if (!isOnlineBooking && type !== "membership" && (!patient || !clinic)) {
     return ApiResponse.error(res, "Patient and clinic are required", 400);
   }
 
@@ -315,10 +317,10 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
   });
 
   // Create pending payment record
-  const payment = await Payment.create({
-    patient,
+  // For online booking, patient will be linked later after successful payment
+  const paymentData = {
     invoice: invoiceId,
-    clinic,
+    ...(clinic && { clinic }),
     amount,
     paymentMode: "razorpay",
     type: type || (invoiceId ? "invoice_payment" : "advance"),
@@ -327,7 +329,14 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
     razorpayDetails: {
       receipt,
     },
-  });
+  };
+
+  // Only add patient if provided
+  if (patient) {
+    paymentData.patient = patient;
+  }
+
+  const payment = await Payment.create(paymentData);
 
   ApiResponse.success(
     res,
@@ -690,4 +699,29 @@ export const getPatientPaymentSummary = asyncHandler(async (req, res) => {
   const summary = await Payment.getPatientPaymentSummary(patientId);
 
   ApiResponse.success(res, { summary }, "Patient payment summary fetched successfully");
+});
+
+// ==================== DELETE ====================
+
+/**
+ * @desc    Permanently delete a payment
+ * @route   DELETE /api/payments/:id
+ * @access  Admin
+ */
+export const deletePayment = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid payment ID", 400);
+  }
+
+  const payment = await Payment.findById(id);
+
+  if (!payment) {
+    return ApiResponse.error(res, "Payment not found", 404);
+  }
+
+  await Payment.findByIdAndDelete(id);
+
+  ApiResponse.success(res, null, "Payment deleted permanently");
 });

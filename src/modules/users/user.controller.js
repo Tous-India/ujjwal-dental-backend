@@ -1,6 +1,7 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import User from "./user.model.js";
+import mongoose from "mongoose";
 
 /**
  * USER CONTROLLER
@@ -336,4 +337,32 @@ export const reactivateUser = asyncHandler(async (req, res) => {
   const reactivatedUser = await User.findById(user._id).select("-password -refreshToken");
 
   ApiResponse.success(res, { user: reactivatedUser }, "User reactivated successfully");
+});
+
+/**
+ * @desc    Permanently delete a user
+ * @route   DELETE /api/users/:id/permanent
+ * @access  Admin
+ */
+export const permanentDeleteUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid user ID", 400);
+  }
+
+  // Prevent deleting yourself
+  if (req.user._id.toString() === id) {
+    return ApiResponse.error(res, "You cannot permanently delete your own account", 400);
+  }
+
+  const user = await User.findById(id);
+
+  if (!user) {
+    return ApiResponse.error(res, "User not found", 404);
+  }
+
+  await User.findByIdAndDelete(id);
+
+  ApiResponse.success(res, null, "User deleted permanently");
 });

@@ -4,8 +4,12 @@ import helmet from 'helmet';
 import routes from './src/routes.js';
 import errorMiddleware from './src/middlewares/error.middleware.js';
 import { NotFoundError } from './src/utils/AppError.js';
+import configureCloudinary from './src/config/cloudinary.js';
 
 const app = express();
+
+// Configure Cloudinary for file uploads
+configureCloudinary();
 
 // Security middleware
 app.use(helmet());
@@ -14,6 +18,8 @@ app.use(helmet());
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173', // Vite dev server
+  'http://localhost:5174', // Vite dev server (alternate port)
+  'http://localhost:5175', // Vite dev server (alternate port)
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -56,3 +62,5 @@ app.use((req, res, next) => {
 app.use(errorMiddleware);
 
 export default app;
+
+

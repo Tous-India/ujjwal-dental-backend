@@ -4,13 +4,15 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import User from "../users/user.model.js";
 import Patient from "../patients/patient.model.js";
+import { sendEmail, sendOtpEmail } from "../../utils/email.js";
 
 /**
  * AUTH CONTROLLER
  *
  * Handles all authentication operations:
  * - Admin/Staff login with email & password
- * - Patient login with phone & OTP
+ * - Patient login with email & OTP (passwordless)
+ * - Patient login with email & password (optional)
  * - Token refresh
  * - Password reset
  */
@@ -43,29 +45,26 @@ export const login = asyncHandler(async (req, res) => {
   );
 
   if (!user) {
-    return ApiResponse.error(res, "Invalid email or password", 401);
+    console.log(`[Admin Login] Failed - no user found with email: ${email}`);
+    return ApiResponse.error(res, "No admin account found with this email", 401);
   }
 
   // Check if user is active
   if (!user.isActive) {
-    return ApiResponse.error(res, "Your account has been deactivated", 401);
+    console.log(`[Admin Login] Failed - deactivated account: ${email}`);
+    return ApiResponse.error(res, "Your account has been deactivated. Please contact the administrator.", 401);
   }
 
   // Compare password
   const isPasswordMatch = await user.comparePassword(password);
 
-  // Debug logging - remove in production
-  // console.log("Password from request:", password);
-  // console.log("Hashed password in DB:", user.password);
-  console.log("Password match result:", isPasswordMatch);
-
   if (!isPasswordMatch) {
-    return ApiResponse.error(res, "Invalid email or password", 401);
+    console.log(`[Admin Login] Failed - wrong password for: ${email}`);
+    return ApiResponse.error(res, "Incorrect password. Please try again.", 401);
   }
 
-  // Update last login time
-  user.lastLogin = new Date();
-  await user.save();
+  // Update last login time (use findByIdAndUpdate to avoid pre-save hook)
+  await User.findByIdAndUpdate(user._id, { lastLogin: new Date() });
 
   // Generate token
   const token = generateToken({
@@ -152,8 +151,38 @@ export const forgotPassword = asyncHandler(async (req, res) => {
 
   await user.save();
 
-  // TODO: Send email with reset link
-  // For now, just return the token (in production, send via email)
+  // Send email with reset link
+  const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+  const resetEmailHtml = `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
+      <p>Hello ${user.name},</p>
+      <p>We received a request to reset your password. Click the button below to set a new password:</p>
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="${resetLink}" style="background: #1976d2; color: #ffffff; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: bold; display: inline-block;">Reset Password</a>
+      </div>
+      <p>If the button doesn't work, copy and paste this link into your browser:</p>
+      <p style="word-break: break-all; color: #1976d2; font-size: 13px;">${resetLink}</p>
+      <p>This link is valid for <strong>30 minutes</strong>. After that, you will need to request a new one.</p>
+      <p style="color: #f44336; font-size: 13px;">If you did not request a password reset, please ignore this email. Your password will remain unchanged.</p>
+      <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+      <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Staff Portal</p>
+    </div>
+  `;
+  const resetEmailText = `Hello ${user.name}, Reset your password using this link: ${resetLink}. This link is valid for 30 minutes. If you did not request this, please ignore this email.`;
+
+  const emailResult = await sendEmail({
+    to: user.email,
+    subject: "Password Reset - Ujjwal Dental Clinic",
+    text: resetEmailText,
+    html: resetEmailHtml,
+  });
+
+  if (!emailResult.success) {
+    console.error("Failed to send password reset email:", emailResult.error);
+  }
+
+  // Fallback log for development
   console.log(`Password reset token for ${email}: ${resetToken}`);
 
   ApiResponse.success(res, null, "If email exists, a reset link will be sent");
@@ -250,35 +279,30 @@ export const changePassword = asyncHandler(async (req, res) => {
 // ===========================================
 
 /**
- * @desc    Patient login - Send OTP
+ * @desc    Patient login - Send OTP via Email
  * @route   POST /api/auth/patient/login
  * @access  Public
  */
 export const patientLogin = asyncHandler(async (req, res) => {
-  const { phone } = req.body;
+  const { email } = req.body;
 
-  if (!phone) {
-    return ApiResponse.error(res, "Please provide phone number", 400);
+  if (!email) {
+    return ApiResponse.error(res, "Please provide email address", 400);
   }
 
-  // Validate phone format (10 digits for India)
-  const phoneRegex = /^[6-9]\d{9}$/;
-  if (!phoneRegex.test(phone)) {
-    return ApiResponse.error(
-      res,
-      "Please provide a valid 10-digit phone number",
-      400,
-    );
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return ApiResponse.error(res, "Please provide a valid email address", 400);
   }
 
-  // Find patient by phone
-  let patient = await Patient.findOne({ phone });
+  // Find patient by email (case-insensitive)
+  let patient = await Patient.findOne({ email: email.toLowerCase() });
 
   if (!patient) {
-    // Patient doesn't exist - they need to register first
     return ApiResponse.error(
       res,
-      "Patient not found. Please register first.",
+      "Patient not found. Connect to the doctor.",
       404,
     );
   }
@@ -292,31 +316,36 @@ export const patientLogin = asyncHandler(async (req, res) => {
   const otp = patient.generateOTP();
   await patient.save();
 
-  // TODO: Send OTP via SMS
-  // For development, we'll log it to console
-  console.log(`OTP for ${phone}: ${otp}`);
+  // Send OTP via email
+  const emailResult = await sendOtpEmail(patient.email, otp, patient.name);
+
+  if (!emailResult.success) {
+    console.error("Failed to send OTP email:", emailResult.error);
+    // Still log OTP for development fallback
+    console.log(`OTP for ${email}: ${otp}`);
+  }
 
   ApiResponse.success(
     res,
-    { phone, otpSent: true },
-    "OTP sent to your phone number",
+    { email: patient.email, otpSent: true },
+    "OTP sent to your email address",
   );
 });
 
 /**
- * @desc    Verify OTP for patient
+ * @desc    Verify OTP for patient (email-based)
  * @route   POST /api/auth/patient/verify-otp
  * @access  Public
  */
 export const verifyOtp = asyncHandler(async (req, res) => {
-  const { phone, otp } = req.body;
+  const { email, otp } = req.body;
 
-  if (!phone || !otp) {
-    return ApiResponse.error(res, "Please provide phone and OTP", 400);
+  if (!email || !otp) {
+    return ApiResponse.error(res, "Please provide email and OTP", 400);
   }
 
-  // Find patient by phone
-  const patient = await Patient.findOne({ phone });
+  // Find patient by email
+  const patient = await Patient.findOne({ email: email.toLowerCase() });
 
   if (!patient) {
     return ApiResponse.error(res, "Patient not found", 404);
@@ -356,19 +385,85 @@ export const verifyOtp = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Resend OTP
+ * @desc    Patient login with password
+ * @route   POST /api/auth/patient/login-password
+ * @access  Public
+ */
+export const patientLoginPassword = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return ApiResponse.error(res, "Please provide email and password", 400);
+  }
+
+  // Find patient by email (include password for comparison)
+  const patient = await Patient.findOne({ email: email.toLowerCase() }).select("+password");
+
+  if (!patient) {
+    console.log(`[Patient Login] Failed - no patient found with email: ${email}`);
+    return ApiResponse.error(res, "No patient account found with this email. If you are an admin, please use the admin login page.", 401);
+  }
+
+  // Check if patient is active
+  if (!patient.isActive) {
+    console.log(`[Patient Login] Failed - deactivated account: ${email}`);
+    return ApiResponse.error(res, "Your account has been deactivated. Please contact the clinic.", 401);
+  }
+
+  // Check if patient has a password set
+  if (!patient.password) {
+    console.log(`[Patient Login] Failed - no password set for: ${email}`);
+    return ApiResponse.error(
+      res,
+      "Password login not enabled for your account. Please use OTP login or contact the clinic to set a password.",
+      400
+    );
+  }
+
+  // Compare password
+  const isPasswordMatch = await patient.comparePassword(password);
+
+  if (!isPasswordMatch) {
+    console.log(`[Patient Login] Failed - wrong password for: ${email}`);
+    return ApiResponse.error(res, "Incorrect password. Please try again.", 401);
+  }
+
+  // Generate token
+  const token = generateToken({
+    id: patient._id,
+    type: "patient",
+  });
+
+  // Return patient data
+  const patientData = {
+    _id: patient._id,
+    name: patient.name,
+    phone: patient.phone,
+    email: patient.email,
+    hasMembership: patient.hasMembership,
+  };
+
+  ApiResponse.success(
+    res,
+    { patient: patientData, token },
+    "Login successful"
+  );
+});
+
+/**
+ * @desc    Resend OTP via Email
  * @route   POST /api/auth/patient/resend-otp
  * @access  Public
  */
 export const resendOtp = asyncHandler(async (req, res) => {
-  const { phone } = req.body;
+  const { email } = req.body;
 
-  if (!phone) {
-    return ApiResponse.error(res, "Please provide phone number", 400);
+  if (!email) {
+    return ApiResponse.error(res, "Please provide email address", 400);
   }
 
-  // Find patient by phone
-  const patient = await Patient.findOne({ phone });
+  // Find patient by email
+  const patient = await Patient.findOne({ email: email.toLowerCase() });
 
   if (!patient) {
     return ApiResponse.error(res, "Patient not found", 404);
@@ -378,10 +473,15 @@ export const resendOtp = asyncHandler(async (req, res) => {
   const otp = patient.generateOTP();
   await patient.save();
 
-  // TODO: Send OTP via SMS
-  console.log(`Resent OTP for ${phone}: ${otp}`);
+  // Send OTP via email
+  const emailResult = await sendOtpEmail(patient.email, otp, patient.name);
 
-  ApiResponse.success(res, { phone, otpSent: true }, "OTP resent successfully");
+  if (!emailResult.success) {
+    console.error("Failed to resend OTP email:", emailResult.error);
+    console.log(`Resent OTP for ${email}: ${otp}`);
+  }
+
+  ApiResponse.success(res, { email: patient.email, otpSent: true }, "OTP resent successfully");
 });
 
 /**
