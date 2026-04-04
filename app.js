@@ -17,9 +17,10 @@ app.use(helmet());
 // CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
-  'http://localhost:5173', // Vite dev server
-  'http://localhost:5174', // Vite dev server (alternate port)
-  'http://localhost:5175', // Vite dev server (alternate port)
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'https://ujjwal-dental-frontend.vercel.app',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
