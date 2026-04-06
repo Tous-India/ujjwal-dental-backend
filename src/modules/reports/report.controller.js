@@ -370,9 +370,9 @@ export const downloadReport = asyncHandler(async (req, res) => {
   }
 
   // Generate signed URL for secure access
-  const { getSignedUrl } = await import("../../middlewares/upload.middleware.js");
+  // Files are uploaded as 'image' resource type in Cloudinary (including PDFs)
   const signedUrl = report.file.publicId
-    ? getSignedUrl(report.file.publicId, !report.file.fileType?.startsWith("image"))
+    ? getSignedUrl(report.file.publicId, false)
     : report.file.url;
 
   ApiResponse.success(

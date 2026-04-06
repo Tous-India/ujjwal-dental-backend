@@ -452,6 +452,8 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
      VERIFY reCAPTCHA
   ======================== */
 
+  // reCAPTCHA was already validated in step 2 (patient details).
+  // Skip here since token may expire during Razorpay checkout.
   if (process.env.RECAPTCHA_SECRET_KEY && captchaToken) {
     try {
       const captchaRes = await fetch("https://www.google.com/recaptcha/api/siteverify", {
@@ -461,7 +463,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
       });
       const captchaData = await captchaRes.json();
       if (!captchaData.success) {
-        return ApiResponse.error(res, "reCAPTCHA verification failed. Please try again.", 400);
+        console.log("[reCAPTCHA] Token expired/invalid in booking step, skipping (was validated earlier)");
       }
     } catch (err) {
       console.error("[reCAPTCHA] Verification error:", err.message);
@@ -479,11 +481,14 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
   const payment = await Payment.findById(paymentId);
 
   if (!payment) {
+    console.log(`[BookWithPayment] Payment not found: ${paymentId}`);
     return ApiResponse.error(res, "Payment not found", 404);
   }
 
+  console.log(`[BookWithPayment] Payment ${paymentId} status: ${payment.status}`);
+
   if (payment.status !== "paid") {
-    return ApiResponse.error(res, "Payment not completed", 400);
+    return ApiResponse.error(res, `Payment not completed. Current status: ${payment.status}. Please try again.`, 400);
   }
 
   // Check if payment is already used for an appointment

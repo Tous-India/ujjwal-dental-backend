@@ -367,11 +367,18 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
   }
 
   // Verify signature
+  if (!process.env.RAZORPAY_KEY_SECRET) {
+    console.error("[VerifyPayment] RAZORPAY_KEY_SECRET is not configured!");
+    return ApiResponse.error(res, "Payment verification not configured on server", 500);
+  }
+
   const body = razorpay_order_id + "|" + razorpay_payment_id;
   const expectedSignature = crypto
     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
     .update(body)
     .digest("hex");
+
+  console.log(`[VerifyPayment] Order: ${razorpay_order_id}, Expected sig match: ${expectedSignature === razorpay_signature}`);
 
   if (expectedSignature !== razorpay_signature) {
     // Update payment as failed
@@ -400,6 +407,8 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
   payment.razorpayPaymentId = razorpay_payment_id;
   payment.razorpaySignature = razorpay_signature;
   await payment.markAsPaid();
+
+  console.log(`[VerifyPayment] Payment ${payment._id} marked as paid. Status: ${payment.status}`);
 
   // Invoice update is handled by the post-save middleware
 

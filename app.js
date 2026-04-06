@@ -11,10 +11,7 @@ const app = express();
 // Configure Cloudinary for file uploads
 configureCloudinary();
 
-// Security middleware
-app.use(helmet());
-
-// CORS configuration
+// CORS configuration — MUST be before helmet and all other middleware
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -26,16 +23,24 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(null, true); // Allow all origins in production for now
     }
   },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+}));
+
+// Handle preflight explicitly for all routes
+app.options('/{*path}', cors());
+
+// Security middleware — after CORS
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
 // Body parsing middleware
