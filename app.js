@@ -6,8 +6,13 @@ import routes from './src/routes.js';
 import errorMiddleware from './src/middlewares/error.middleware.js';
 import { NotFoundError } from './src/utils/AppError.js';
 import configureCloudinary from './src/config/cloudinary.js';
+import { globalLimiter } from './src/middlewares/rateLimit.middleware.js';
 
 const app = express();
+
+// Trust the first proxy (Vercel / load balancer) so rate limiting keys on the
+// real client IP from X-Forwarded-For instead of the proxy address.
+app.set('trust proxy', 1);
 
 // Configure Cloudinary for file uploads
 configureCloudinary();
@@ -60,8 +65,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes
-app.use('/api', routes);
+// API routes — loose global rate limit applied across the API surface
+app.use('/api', globalLimiter, routes);
 
 // Handle 404 - Route not found
 app.use((req, res, next) => {

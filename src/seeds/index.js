@@ -7,6 +7,13 @@ import User from "../modules/users/user.model.js";
 dotenv.config();
 
 const seedAdmin = async () => {
+  // Refuse to run against production: this seed deletes all admin users and
+  // recreates one with a well-known default password.
+  if (process.env.NODE_ENV === "production") {
+    console.error("❌ Refusing to run seed script in production (NODE_ENV=production).");
+    process.exit(1);
+  }
+
   try {
     await connectDB();
 

@@ -52,14 +52,14 @@ export const login = asyncHandler(async (req, res) => {
     "+password",
   );
 
+  // Use a single generic message for not-found / inactive / wrong-password
+  // to avoid leaking whether an account exists (account enumeration).
   if (!user) {
-    console.log(`[Admin Login] Failed - no user found with email: ${email}`);
-    return ApiResponse.error(res, "No admin account found with this email", 401);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Check if user is active
   if (!user.isActive) {
-    console.log(`[Admin Login] Failed - deactivated account: ${email}`);
     return ApiResponse.error(res, "Your account has been deactivated. Please contact the administrator.", 401);
   }
 
@@ -67,8 +67,7 @@ export const login = asyncHandler(async (req, res) => {
   const isPasswordMatch = await user.comparePassword(password);
 
   if (!isPasswordMatch) {
-    console.log(`[Admin Login] Failed - wrong password for: ${email}`);
-    return ApiResponse.error(res, "Incorrect password. Please try again.", 401);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Update last login time (use findByIdAndUpdate to avoid pre-save hook)
@@ -194,9 +193,6 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     console.error("Failed to send password reset email:", emailResult.error);
   }
 
-  // Fallback log for development
-  console.log(`Password reset token for ${email}: ${resetToken}`);
-
   ApiResponse.success(res, null, "If email exists, a reset link will be sent");
 });
 
@@ -212,11 +208,15 @@ export const resetPassword = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Please provide token and new password", 400);
   }
 
-  // Validate password length
-  if (newPassword.length < 6) {
+  // Validate password strength: min 10 chars, at least one letter and one number
+  if (
+    newPassword.length < 10 ||
+    !/[A-Za-z]/.test(newPassword) ||
+    !/[0-9]/.test(newPassword)
+  ) {
     return ApiResponse.error(
       res,
-      "Password must be at least 6 characters",
+      "Password must be at least 10 characters and include at least one letter and one number",
       400,
     );
   }
@@ -270,11 +270,15 @@ export const changePassword = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Current password is incorrect", 401);
   }
 
-  // Validate new password
-  if (newPassword.length < 6) {
+  // Validate new password strength: min 10 chars, at least one letter and one number
+  if (
+    newPassword.length < 10 ||
+    !/[A-Za-z]/.test(newPassword) ||
+    !/[0-9]/.test(newPassword)
+  ) {
     return ApiResponse.error(
       res,
-      "New password must be at least 6 characters",
+      "New password must be at least 10 characters and include at least one letter and one number",
       400,
     );
   }
@@ -333,8 +337,6 @@ export const patientLogin = asyncHandler(async (req, res) => {
 
   if (!emailResult.success) {
     console.error("Failed to send OTP email:", emailResult.error);
-    // Still log OTP for development fallback
-    console.log(`OTP for ${email}: ${otp}`);
   }
 
   ApiResponse.success(
@@ -413,20 +415,19 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
   // Find patient by email (include password for comparison)
   const patient = await Patient.findOne({ email: email.toLowerCase() }).select("+password");
 
+  // Use a single generic message for not-found / wrong-password
+  // to avoid leaking whether an account exists (account enumeration).
   if (!patient) {
-    console.log(`[Patient Login] Failed - no patient found with email: ${email}`);
-    return ApiResponse.error(res, "No patient account found with this email. If you are an admin, please use the admin login page.", 401);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Check if patient is active
   if (!patient.isActive) {
-    console.log(`[Patient Login] Failed - deactivated account: ${email}`);
     return ApiResponse.error(res, "Your account has been deactivated. Please contact the clinic.", 401);
   }
 
   // Check if patient has a password set
   if (!patient.password) {
-    console.log(`[Patient Login] Failed - no password set for: ${email}`);
     return ApiResponse.error(
       res,
       "Password login not enabled for your account. Please use OTP login or contact the clinic to set a password.",
@@ -438,8 +439,7 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
   const isPasswordMatch = await patient.comparePassword(password);
 
   if (!isPasswordMatch) {
-    console.log(`[Patient Login] Failed - wrong password for: ${email}`);
-    return ApiResponse.error(res, "Incorrect password. Please try again.", 401);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Generate token
@@ -494,7 +494,6 @@ export const resendOtp = asyncHandler(async (req, res) => {
 
   if (!emailResult.success) {
     console.error("Failed to resend OTP email:", emailResult.error);
-    console.log(`Resent OTP for ${email}: ${otp}`);
   }
 
   ApiResponse.success(res, { email: patient.email, otpSent: true }, "OTP resent successfully");

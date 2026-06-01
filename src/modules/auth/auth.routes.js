@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as authController from "./auth.controller.js";
 import { authProtect, patientProtect } from "../../middlewares/auth.middleware.js";
+import { authLimiter } from "../../middlewares/rateLimit.middleware.js";
 
 const router = Router();
 
@@ -31,22 +32,22 @@ const router = Router();
 // ===========================================
 
 // Admin/Staff login with email & password
-router.post("/login", authController.login);
+router.post("/login", authLimiter, authController.login);
 
 // Patient login - sends OTP to phone
 router.post("/patient/login", authController.patientLogin);
 
 // Patient login with password (given by doctor)
-router.post("/patient/login-password", authController.patientLoginPassword);
+router.post("/patient/login-password", authLimiter, authController.patientLoginPassword);
 
 // Patient verify OTP
-router.post("/patient/verify-otp", authController.verifyOtp);
+router.post("/patient/verify-otp", authLimiter, authController.verifyOtp);
 
 // Resend OTP
 router.post("/patient/resend-otp", authController.resendOtp);
 
 // Forgot password - sends reset link
-router.post("/forgot-password", authController.forgotPassword);
+router.post("/forgot-password", authLimiter, authController.forgotPassword);
 
 // Reset password with token
 router.post("/reset-password", authController.resetPassword);

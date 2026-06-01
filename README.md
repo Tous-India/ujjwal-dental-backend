@@ -33,9 +33,9 @@ node src/seeds/notifications.seed.js
 npm run dev
 ```
 
-**Default Admin Credentials:**
-- Email: `admin@ujjwaldental.com`
-- Password: `Admin@123`
+**Admin account:** the seed script (`node src/seeds/index.js`, development only) creates an
+admin user. Set the seed credentials via environment variables / your local seed config and
+change the password immediately after first login. Do not commit or document real credentials.
 
 ## Project Structure
 
@@ -644,11 +644,10 @@ Follow this order to test APIs properly (dependencies flow top to bottom):
 
 ---
 
-### Default Test Credentials
+### Admin Login
 
-| Role | Email | Password |
-|------|-------|----------|
-| **Admin** | `admin@ujjwaldental.com` | `Admin@123` |
+An admin user is created locally by the seed script (development only). Credentials are not
+documented here — use your local seed configuration and change the password after first login.
 
 **Patient Login:**
 - Email-based OTP authentication (passwordless)

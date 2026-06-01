@@ -29,9 +29,13 @@ export const getAllPatients = asyncHandler(async (req, res) => {
   // Build query
   const query = {};
 
-  // Filter by active status
+  // Filter by active status.
+  // Default to active-only so soft-deleted (deactivated) patients drop out of
+  // the working list; pass ?isActive=false explicitly to view inactive ones.
   if (isActive !== undefined) {
     query.isActive = isActive === "true";
+  } else {
+    query.isActive = true;
   }
 
   // Search by name, phone, or email
