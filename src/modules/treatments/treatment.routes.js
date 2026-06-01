@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as treatmentController from './treatment.controller.js';
+import authProtect, { adminOnly } from '../../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -10,46 +11,52 @@ const router = Router();
  * Two types of data:
  * 1. Treatment Master - Catalog of available treatments (15 treatments)
  * 2. Treatment Instance - Actual treatment given to a patient
+ *
+ * Access (consumed only by the admin app; patients read their own treatments
+ * via the guarded /patients/:id/treatments route):
+ *   - Master reads: authenticated staff/admin
+ *   - Master writes (catalog config): admin only
+ *   - Instances (patient medical data): authenticated staff/admin
  */
 
 // ========== TREATMENT MASTER (Catalog) ==========
 
-// Get all treatment types (catalog)
-router.get('/master', treatmentController.getAllTreatmentTypes);
+// Get all treatment types (catalog) — staff/admin
+router.get('/master', authProtect, treatmentController.getAllTreatmentTypes);
 
-// Get single treatment type // for now no needed
-router.get('/master/:id', treatmentController.getTreatmentTypeById);
+// Get single treatment type — staff/admin
+router.get('/master/:id', authProtect, treatmentController.getTreatmentTypeById);
 
-// Create new treatment type (Admin)
-router.post('/master', treatmentController.createTreatmentType);
+// Create new treatment type — admin only
+router.post('/master', authProtect, adminOnly, treatmentController.createTreatmentType);
 
-// Update treatment type (Admin)
-router.patch('/master/:id', treatmentController.updateTreatmentType);
+// Update treatment type — admin only
+router.patch('/master/:id', authProtect, adminOnly, treatmentController.updateTreatmentType);
 
-// Delete (deactivate) treatment type (Admin)
-router.delete('/master/:id', treatmentController.deleteTreatmentType);
+// Delete (deactivate) treatment type — admin only
+router.delete('/master/:id', authProtect, adminOnly, treatmentController.deleteTreatmentType);
 
 // ========== TREATMENT INSTANCES (Patient Treatments) ==========
 
-// Get all treatment instances
-router.get('/', treatmentController.getAllTreatments);
+// Get all treatment instances — staff/admin
+router.get('/', authProtect, treatmentController.getAllTreatments);
 
-// Get single treatment instance
-router.get('/:id', treatmentController.getTreatmentById);
+// Get single treatment instance — staff/admin
+router.get('/:id', authProtect, treatmentController.getTreatmentById);
 
-// Add treatment to appointment
-router.post('/', treatmentController.createTreatment);
+// Add treatment to appointment — staff/admin
+router.post('/', authProtect, treatmentController.createTreatment);
 
-// Update treatment instance
-router.patch('/:id', treatmentController.updateTreatment);
+// Update treatment instance — staff/admin
+router.patch('/:id', authProtect, treatmentController.updateTreatment);
 
-// Update treatment status
-router.patch('/:id/status', treatmentController.updateTreatmentStatus);
+// Update treatment status — staff/admin
+router.patch('/:id/status', authProtect, treatmentController.updateTreatmentStatus);
 
-// Add session to treatment (for multi-session treatments)
-router.post('/:id/sessions', treatmentController.addSession);
+// Add session to treatment (for multi-session treatments) — staff/admin
+router.post('/:id/sessions', authProtect, treatmentController.addSession);
 
-// Schedule follow-up for treatment
-router.post('/:id/follow-up', treatmentController.scheduleFollowUp);
+// Schedule follow-up for treatment — staff/admin
+router.post('/:id/follow-up', authProtect, treatmentController.scheduleFollowUp);
 
 export default router;

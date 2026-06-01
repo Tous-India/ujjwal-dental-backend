@@ -68,4 +68,18 @@ describe("Treatments CRUD", () => {
     const treatment = res.body.data.treatment || res.body.data;
     createdTreatmentId = treatment._id;
   });
+
+  it("GET /api/treatments/master - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).get("/api/treatments/master");
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("POST /api/treatments/master - rejects unauthenticated create with 401", async () => {
+    const res = await request(app)
+      .post("/api/treatments/master")
+      .send({ name: "Rogue", code: "RG001", price: 1, duration: 1, category: "endodontic" });
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
 });
