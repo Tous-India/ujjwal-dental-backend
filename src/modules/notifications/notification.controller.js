@@ -1,5 +1,6 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import { sendEmail } from "../../utils/email.js";
 import Notification from "./notification.model.js";
 import Patient from "../patients/patient.model.js";
 import User from "../users/user.model.js";
@@ -603,34 +604,41 @@ function verifyOwnership(req, notification) {
  * Process notification delivery across channels
  * This is a placeholder - actual implementation would integrate with SMS/Email providers
  */
-async function processNotificationDelivery(notification) {
+export async function processNotificationDelivery(notification) {
   try {
-    // Send SMS if enabled
+    // Send SMS if enabled (TODO: integrate provider later)
     if (notification.sendSms) {
-      // TODO: Integrate with SMS provider (Twilio, MSG91, etc.)
-      // const result = await sendSMS(recipientPhone, notification.message);
-      // await notification.updateSmsStatus(result.success, result.error);
-      console.log(`SMS would be sent: ${notification.title}`);
-      notification.smsStatus = { sent: true, sentAt: new Date() };
+      console.log(`SMS pending setup: ${notification.title}`);
     }
 
     // Send Email if enabled
     if (notification.sendEmail) {
-      // TODO: Integrate with email provider (Nodemailer, SendGrid, etc.)
-      // const result = await sendEmail(recipientEmail, notification.title, notification.message);
-      // await notification.updateEmailStatus(result.success, result.error);
-      console.log(`Email would be sent: ${notification.title}`);
-      notification.emailStatus = { sent: true, sentAt: new Date() };
+      try {
+        const Model = notification.recipientModel === "Patient" ? Patient : User;
+        const recipient = await Model.findById(notification.recipient);
+        if (recipient?.email) {
+          await sendEmail({
+            to: recipient.email,
+            subject: notification.title,
+            html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
+              <h2 style="color:#003366">${notification.title}</h2>
+              <p style="color:#555;line-height:1.6">${notification.message}</p>
+              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+              <p style="color:#999;font-size:12px">Ujjwal Dental Clinic — Caring For Your Smile</p>
+            </div>`,
+          });
+          notification.emailStatus = { sent: true, sentAt: new Date() };
+        }
+      } catch (err) {
+        notification.emailStatus = { sent: false, error: err.message };
+      }
     }
 
-    // Send WhatsApp if enabled
+    // Send WhatsApp if enabled (TODO: integrate provider later)
     if (notification.sendWhatsapp) {
-      // TODO: Integrate with WhatsApp Business API
-      console.log(`WhatsApp would be sent: ${notification.title}`);
-      notification.whatsappStatus = { sent: true, sentAt: new Date() };
+      console.log(`WhatsApp pending setup: ${notification.title}`);
     }
 
-    // Mark as processed
     notification.isProcessed = true;
     notification.processedAt = new Date();
     await notification.save();

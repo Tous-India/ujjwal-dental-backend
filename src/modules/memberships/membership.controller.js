@@ -1,7 +1,9 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import MembershipPlan from "./membership.model.js";
+import Coupon from "./coupon.model.js";
 import Patient from "../patients/patient.model.js";
+import { notify } from "../../utils/notifyHelper.js";
 import mongoose from "mongoose";
 
 /**
@@ -160,6 +162,7 @@ export const updatePlan = asyncHandler(async (req, res) => {
     "features",
     "displayOrder",
     "isActive",
+    "couponConfig",
   ];
 
   allowedFields.forEach((field) => {
@@ -284,6 +287,9 @@ export const assignMembership = asyncHandler(async (req, res) => {
 
   await patient.save();
 
+  // Generate coupons for this membership
+  await Coupon.generateForMembership(patient, plan, startDate, expiryDate);
+
   // Populate membership plan for response
   await patient.populate("membership.plan");
 
@@ -369,6 +375,9 @@ export const renewMembership = asyncHandler(async (req, res) => {
   };
 
   await patient.save();
+
+  // Generate coupons for renewed membership
+  await Coupon.generateForMembership(patient, plan, startDate, expiryDate);
 
   // Populate membership plan for response
   await patient.populate("membership.plan");
@@ -593,6 +602,9 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
 
   await patient.save();
 
+  // Generate coupons for purchased membership
+  await Coupon.generateForMembership(patient, plan, startDate, expiryDate);
+
   // Populate membership plan for response
   await patient.populate("membership.plan");
 
@@ -611,6 +623,8 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
     },
     "Membership purchased successfully"
   );
+
+  notify({ recipientId: patient._id, recipientModel: "Patient", type: "membership_renewal", title: "Membership Activated", message: `Your ${plan.name} membership is now active! Valid until ${expiryDate.toLocaleDateString("en-IN")}. Enjoy your benefits.`, sendEmail: true });
 });
 
 /**
@@ -666,4 +680,130 @@ export const getMembershipStats = asyncHandler(async (req, res) => {
     },
     "Membership statistics fetched successfully"
   );
+});
+
+// ==================== COUPON MANAGEMENT ====================
+
+export const getAllCoupons = asyncHandler(async (req, res) => {
+  const { status, search, page = 1, limit = 20 } = req.query;
+  const query = {};
+
+  if (status && ["unused", "used", "locked"].includes(status)) {
+    query.status = status;
+  }
+
+  if (search) {
+    const patients = await Patient.find({
+      $or: [
+        { name: { $regex: search, $options: "i" } },
+        { phone: { $regex: search, $options: "i" } },
+      ],
+    }).select("_id");
+    const patientIds = patients.map((p) => p._id);
+    query.$or = [
+      { patient: { $in: patientIds } },
+      { code: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const [coupons, total] = await Promise.all([
+    Coupon.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate("patient", "name phone email")
+      .populate("membershipPlan", "name code"),
+    Coupon.countDocuments(query),
+  ]);
+
+  const stats = await Coupon.aggregate([
+    { $group: { _id: "$status", count: { $sum: 1 } } },
+  ]);
+  const statMap = stats.reduce((acc, s) => { acc[s._id] = s.count; return acc; }, {});
+
+  ApiResponse.success(res, {
+    coupons,
+    total,
+    page: parseInt(page),
+    totalPages: Math.ceil(total / parseInt(limit)),
+    stats: { total: total, unused: statMap.unused || 0, used: statMap.used || 0, locked: statMap.locked || 0 },
+  }, "All coupons fetched successfully");
+});
+
+export const getPatientCoupons = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+  const coupons = await Coupon.find({ patient: patientId })
+    .sort({ couponNumber: 1 })
+    .populate("membershipPlan", "name code");
+
+  ApiResponse.success(res, { coupons }, "Coupons fetched successfully");
+});
+
+export const getMyCoupons = asyncHandler(async (req, res) => {
+  const patientId = req.patient?._id || req.user?._id;
+  if (!patientId) return ApiResponse.error(res, "Unauthorized", 401);
+
+  const coupons = await Coupon.find({ patient: patientId })
+    .sort({ couponNumber: 1 })
+    .populate("membershipPlan", "name code");
+
+  ApiResponse.success(res, { coupons }, "Coupons fetched successfully");
+});
+
+export const verifyCoupon = asyncHandler(async (req, res) => {
+  const { code, usageNotes } = req.body;
+  if (!code) return ApiResponse.error(res, "Coupon code is required", 400);
+
+  const coupon = await Coupon.findOne({ code: code.toUpperCase() })
+    .populate("patient", "name phone email")
+    .populate("membershipPlan", "name code");
+
+  if (!coupon) return ApiResponse.error(res, "Invalid coupon code", 404);
+  if (coupon.status === "used") return ApiResponse.error(res, "This coupon has already been used", 400);
+  if (coupon.status === "locked") return ApiResponse.error(res, "This coupon is not yet unlocked. Previous coupons must be used first.", 400);
+  if (new Date() > coupon.membershipExpiry) return ApiResponse.error(res, "This coupon has expired", 400);
+
+  coupon.status = "used";
+  coupon.usedAt = new Date();
+  coupon.usedBy = req.user._id;
+  coupon.usageNotes = usageNotes || "";
+  await coupon.save();
+
+  // Unlock the next coupon in sequence
+  await Coupon.findOneAndUpdate(
+    { patient: coupon.patient._id, couponNumber: coupon.couponNumber + 1, status: "locked" },
+    { status: "unused" }
+  );
+
+  ApiResponse.success(
+    res,
+    {
+      coupon,
+      patient: coupon.patient,
+      message: `Coupon #${coupon.couponNumber} verified — ₹${coupon.flatDiscount} off + ${coupon.surgeryDiscount}% off surgery`,
+    },
+    "Coupon verified and redeemed successfully"
+  );
+});
+
+export const undoCouponUsed = asyncHandler(async (req, res) => {
+  const { couponId } = req.params;
+  const coupon = await Coupon.findById(couponId);
+  if (!coupon) return ApiResponse.error(res, "Coupon not found", 404);
+  if (coupon.status !== "used") return ApiResponse.error(res, "Coupon is not in used state", 400);
+
+  // Re-lock the next coupon if it's currently unused
+  await Coupon.findOneAndUpdate(
+    { patient: coupon.patient, couponNumber: coupon.couponNumber + 1, status: "unused" },
+    { status: "locked" }
+  );
+
+  coupon.status = "unused";
+  coupon.usedAt = undefined;
+  coupon.usedBy = undefined;
+  coupon.usageNotes = undefined;
+  await coupon.save();
+
+  ApiResponse.success(res, { coupon }, "Coupon usage reverted successfully");
 });

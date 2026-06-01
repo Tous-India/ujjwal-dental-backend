@@ -1,5 +1,7 @@
 import Enquiry from "./enquiry.model.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import { notify } from "../../utils/notifyHelper.js";
+import User from "../users/user.model.js";
 
 /**
  * ENQUIRY CONTROLLER
@@ -245,6 +247,12 @@ export const submitEnquiry = async (req, res) => {
       "Enquiry submitted successfully. We will contact you soon!",
       201
     );
+
+    // Notify admin about new enquiry
+    const admin = await User.findOne({ role: "admin" });
+    if (admin) {
+      notify({ recipientId: admin._id, recipientModel: "User", type: "general", title: "New Enquiry Received", message: `New enquiry from ${enquiry.name} (${enquiry.phone})${enquiry.treatmentName ? ` for ${enquiry.treatmentName}` : ""}` });
+    }
   } catch (error) {
     console.error("Submit enquiry error:", error);
     return ApiResponse.error(res, error.message, 500);

@@ -1,5 +1,6 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import { notify } from "../../utils/notifyHelper.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Patient from "../patients/patient.model.js";
@@ -417,6 +418,10 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
     .populate("invoice", "invoiceNumber grandTotal balanceDue paymentStatus");
 
   ApiResponse.success(res, { payment: populatedPayment }, "Payment verified successfully");
+
+  if (payment.patient) {
+    notify({ recipientId: payment.patient, recipientModel: "Patient", type: "payment_received", title: "Payment Received", message: `Your payment of ₹${payment.amount} has been received successfully.`, sendEmail: true });
+  }
 });
 
 /**

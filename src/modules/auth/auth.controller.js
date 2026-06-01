@@ -22,6 +22,14 @@ const generateToken = (payload, expiresIn = "7d") => {
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
 };
 
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+  path: "/",
+};
+
 // ===========================================
 // ADMIN/STAFF AUTHENTICATION
 // ===========================================
@@ -73,6 +81,8 @@ export const login = asyncHandler(async (req, res) => {
     type: "admin",
   });
 
+  res.cookie("admin_token", token, COOKIE_OPTIONS);
+
   // Return user data (without password)
   const userData = {
     _id: user._id,
@@ -111,6 +121,8 @@ export const logout = asyncHandler(async (req, res) => {
   if (req.user && req.user._id) {
     await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
   }
+
+  res.clearCookie("admin_token", { ...COOKIE_OPTIONS, maxAge: 0 });
 
   ApiResponse.success(res, null, "Logged out successfully");
 });
@@ -368,6 +380,8 @@ export const verifyOtp = asyncHandler(async (req, res) => {
     type: "patient",
   });
 
+  res.cookie("patient_token", token, COOKIE_OPTIONS);
+
   // Return patient data
   const patientData = {
     _id: patient._id,
@@ -433,6 +447,8 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
     id: patient._id,
     type: "patient",
   });
+
+  res.cookie("patient_token", token, COOKIE_OPTIONS);
 
   // Return patient data
   const patientData = {
@@ -507,6 +523,16 @@ export const getPatientMe = asyncHandler(async (req, res) => {
  * @route   POST /api/auth/refresh-token
  * @access  Public (with refresh token)
  */
+/**
+ * @desc    Patient logout (clear cookie)
+ * @route   POST /api/auth/patient/logout
+ * @access  Private (Patient)
+ */
+export const patientLogout = asyncHandler(async (req, res) => {
+  res.clearCookie("patient_token", { ...COOKIE_OPTIONS, maxAge: 0 });
+  ApiResponse.success(res, null, "Logged out successfully");
+});
+
 export const refreshToken = asyncHandler(async (req, res) => {
   const { refreshToken: token } = req.body;
 

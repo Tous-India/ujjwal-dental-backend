@@ -74,4 +74,7 @@ router.post("/change-password", authProtect, authController.changePassword);
 // Get current logged in patient
 router.get("/patient/me", patientProtect, authController.getPatientMe);
 
+// Logout patient
+router.post("/patient/logout", patientProtect, authController.patientLogout);
+
 export default router;

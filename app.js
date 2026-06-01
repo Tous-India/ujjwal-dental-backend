@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import routes from './src/routes.js';
 import errorMiddleware from './src/middlewares/error.middleware.js';
 import { NotFoundError } from './src/utils/AppError.js';
@@ -27,7 +28,7 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(null, true); // Allow all origins in production for now
+      callback(new Error('Origin not allowed by CORS'), false);
     }
   },
   credentials: true,
@@ -42,6 +43,9 @@ app.options('/{*path}', cors());
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
+
+// Cookie parsing middleware
+app.use(cookieParser());
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));

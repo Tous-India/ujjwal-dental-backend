@@ -128,6 +128,15 @@ const membershipPlanSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    // Coupon/Card configuration
+    couponConfig: {
+      enabled: { type: Boolean, default: true },
+      numberOfCoupons: { type: Number, default: 6 },
+      flatDiscount: { type: Number, default: 500 },
+      surgeryDiscount: { type: Number, default: 30 },
+      conditions: { type: String, default: '' },
+    },
   },
   {
     timestamps: true,
@@ -181,152 +190,86 @@ membershipPlanSchema.statics.getActivePlans = async function () {
  */
 membershipPlanSchema.statics.seedDefaultPlans = async function () {
   const defaultPlans = [
-    // Individual Plans
     {
-      name: 'Individual Silver',
-      code: 'IND-SLV',
+      name: 'Implant Post Care',
+      code: 'IMP-PC',
       type: 'individual',
-      tier: 'silver',
-      description: 'Basic membership for individuals with 10% discount on all treatments',
-      price: 999,
-      discountPercentage: 10,
+      tier: 'platinum',
+      description: 'Post-implant care plan with follow-up visits, ₹500 off per visit and 30% off on surgery',
+      price: 4500,
+      discountPercentage: 30,
       maxMembers: 1,
       features: [
-        '10% discount on all treatments',
-        'Priority appointment booking',
-        'Free dental checkup on enrollment',
+        'Post-implant care and follow-up visits',
+        '₹500 off per clinic visit (coupon card)',
+        '30% off on surgery',
+        'Free consultation and X-ray for implant patients',
       ],
       benefits: [
-        { type: 'discount', description: '10% off on all treatments', discountPercentage: 10 },
-        { type: 'priority_booking', description: 'Priority appointment booking' },
+        { type: 'discount', description: '30% off on surgery', discountPercentage: 30 },
+        { type: 'free_service', description: 'Free consultation and X-ray', freeService: { name: 'Consultation & X-ray', quantity: 1 } },
       ],
+      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year from purchase' },
       displayOrder: 1,
     },
     {
-      name: 'Individual Gold',
-      code: 'IND-GLD',
-      type: 'individual',
-      tier: 'gold',
-      description: 'Premium membership with 15% discount and 1 free cleaning',
-      price: 1999,
-      discountPercentage: 15,
-      maxMembers: 1,
-      features: [
-        '15% discount on all treatments',
-        '1 free dental cleaning per year',
-        'Priority appointment booking',
-        'Free dental checkup on enrollment',
-      ],
-      benefits: [
-        { type: 'discount', description: '15% off on all treatments', discountPercentage: 15 },
-        { type: 'free_service', description: '1 free dental cleaning per year', freeService: { name: 'Dental Cleaning', quantity: 1 } },
-        { type: 'priority_booking', description: 'Priority appointment booking' },
-      ],
-      displayOrder: 2,
-    },
-    {
-      name: 'Individual Platinum',
-      code: 'IND-PLT',
-      type: 'individual',
-      tier: 'platinum',
-      description: 'Elite membership with 20% discount and 2 free cleanings',
-      price: 2999,
-      discountPercentage: 20,
-      maxMembers: 1,
-      features: [
-        '20% discount on all treatments',
-        '2 free dental cleanings per year',
-        'Priority appointment booking',
-        'Free dental checkup on enrollment',
-        'Free X-ray on enrollment',
-      ],
-      benefits: [
-        { type: 'discount', description: '20% off on all treatments', discountPercentage: 20 },
-        { type: 'free_service', description: '2 free dental cleanings per year', freeService: { name: 'Dental Cleaning', quantity: 2 } },
-        { type: 'priority_booking', description: 'Priority appointment booking' },
-      ],
-      displayOrder: 3,
-    },
-
-    // Family Plans
-    {
-      name: 'Family Silver',
-      code: 'FAM-SLV',
-      type: 'family',
-      tier: 'silver',
-      description: 'Basic family membership for up to 4 members with 10% discount',
-      price: 1999,
-      discountPercentage: 10,
-      maxMembers: 4,
-      features: [
-        '10% discount on all treatments',
-        'Coverage for up to 4 family members',
-        'Priority appointment booking',
-        'Free dental checkup for all members',
-      ],
-      benefits: [
-        { type: 'discount', description: '10% off on all treatments', discountPercentage: 10 },
-        { type: 'priority_booking', description: 'Priority appointment booking' },
-      ],
-      displayOrder: 4,
-    },
-    {
-      name: 'Family Gold',
-      code: 'FAM-GLD',
+      name: 'Cosmodentofacial Family Dental Plan',
+      code: 'CDF-FAM',
       type: 'family',
       tier: 'gold',
-      description: 'Premium family membership with 15% discount and 2 free cleanings',
-      price: 3499,
-      discountPercentage: 15,
-      maxMembers: 4,
-      features: [
-        '15% discount on all treatments',
-        'Coverage for up to 4 family members',
-        '2 free dental cleanings per year (shared)',
-        'Priority appointment booking',
-        'Free dental checkup for all members',
-      ],
-      benefits: [
-        { type: 'discount', description: '15% off on all treatments', discountPercentage: 15 },
-        { type: 'free_service', description: '2 free dental cleanings per year', freeService: { name: 'Dental Cleaning', quantity: 2 } },
-        { type: 'priority_booking', description: 'Priority appointment booking' },
-      ],
-      displayOrder: 5,
-    },
-    {
-      name: 'Family Platinum',
-      code: 'FAM-PLT',
-      type: 'family',
-      tier: 'platinum',
-      description: 'Elite family membership with 20% discount and 4 free cleanings',
+      description: 'Complete family dental care with check-ups, cleaning and discounted cosmetic treatments',
       price: 4999,
       discountPercentage: 20,
       maxMembers: 4,
       features: [
-        '20% discount on all treatments',
-        'Coverage for up to 4 family members',
-        '4 free dental cleanings per year (shared)',
-        'Priority appointment booking',
-        'Free dental checkup for all members',
-        'Free X-ray for all members',
-        'Home visit available',
+        'Complete family dental check-up and cleaning',
+        'Discounted rates on cosmetic and orthodontic treatments',
+        '₹500 off per clinic visit (coupon card)',
+        '30% off on surgery',
+        'Free consultation and X-ray for the entire family',
       ],
       benefits: [
         { type: 'discount', description: '20% off on all treatments', discountPercentage: 20 },
-        { type: 'free_service', description: '4 free dental cleanings per year', freeService: { name: 'Dental Cleaning', quantity: 4 } },
+        { type: 'free_service', description: 'Free consultation and X-ray for family', freeService: { name: 'Family Consultation', quantity: 4 } },
         { type: 'priority_booking', description: 'Priority appointment booking' },
-        { type: 'home_visit', description: 'Home visit available on request' },
       ],
-      displayOrder: 6,
+      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year. Up to 4 family members.' },
+      displayOrder: 2,
+    },
+    {
+      name: 'Individuals Plan',
+      code: 'IND-PLN',
+      type: 'individual',
+      tier: 'silver',
+      description: 'Comprehensive individual dental care package with coupon cards',
+      price: 2000,
+      discountPercentage: 15,
+      maxMembers: 1,
+      features: [
+        'Comprehensive individual dental care package',
+        '₹500 off per clinic visit (coupon card)',
+        '30% off on surgery',
+        'Free consultation and intraoral X-ray',
+      ],
+      benefits: [
+        { type: 'discount', description: '15% off on all treatments', discountPercentage: 15 },
+        { type: 'free_service', description: 'Free consultation and intraoral X-ray', freeService: { name: 'Consultation & X-ray', quantity: 1 } },
+      ],
+      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year from purchase' },
+      displayOrder: 3,
     },
   ];
 
-  // Use upsert to avoid duplicates
+  // Remove old plans that are not in the new default set
+  const defaultCodes = defaultPlans.map((p) => p.code);
+  await this.deleteMany({ code: { $nin: defaultCodes } });
+
+  // Upsert the 3 default plans
   for (const plan of defaultPlans) {
     await this.findOneAndUpdate({ code: plan.code }, plan, { upsert: true, new: true });
   }
 
-  console.log('Default membership plans seeded successfully');
+  console.log('Default membership plans seeded (3 plans)');
 };
 
 // Create and export the model

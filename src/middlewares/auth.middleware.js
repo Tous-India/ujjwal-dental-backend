@@ -25,15 +25,15 @@ const authProtect = async (req, res, next) => {
   try {
     let token;
 
-    // Get token from Authorization header
-    if (
+    if (req.cookies?.admin_token) {
+      token = req.cookies.admin_token;
+    } else if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
     ) {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    // Check if token exists
     if (!token) {
       return ApiResponse.error(res, "Not authorized, token missing", 401);
     }
@@ -86,15 +86,15 @@ const patientProtect = async (req, res, next) => {
   try {
     let token;
 
-    // Get token from Authorization header
-    if (
+    if (req.cookies?.patient_token) {
+      token = req.cookies.patient_token;
+    } else if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
     ) {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    // Check if token exists
     if (!token) {
       return ApiResponse.error(res, "Not authorized, token missing", 401);
     }
@@ -143,7 +143,11 @@ const anyAuth = async (req, res, next) => {
   try {
     let token;
 
-    if (
+    if (req.cookies?.admin_token) {
+      token = req.cookies.admin_token;
+    } else if (req.cookies?.patient_token) {
+      token = req.cookies.patient_token;
+    } else if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
     ) {
@@ -207,13 +211,18 @@ const adminOnly = (req, res, next) => {
  */
 const optionalAuth = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
+    let token;
 
-    if (!authHeader || !authHeader.startsWith("Bearer")) {
-      return next();
+    if (req.cookies?.admin_token) {
+      token = req.cookies.admin_token;
+    } else if (req.cookies?.patient_token) {
+      token = req.cookies.patient_token;
+    } else {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith("Bearer")) {
+        token = authHeader.split(" ")[1];
+      }
     }
-
-    const token = authHeader.split(" ")[1];
 
     if (!token) {
       return next();

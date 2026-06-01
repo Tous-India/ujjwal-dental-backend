@@ -11,6 +11,7 @@
     "seed:patients": "node src/seeds/patients.seed.js",
     "seed:notifications": "node src/seeds/notifications.seed.js",
     "seed:clinics": "node src/seeds/clinics.seed.js",
+    "seed:coupons": "node src/seeds/coupons.seed.js",
     "test": "vitest run --config vitest.config.js",
     "test:watch": "vitest --config vitest.config.js",
     "test:coverage": "vitest run --coverage --config vitest.config.js"
@@ -27,6 +28,7 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.9.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dayjs": "^1.11.19",
     "dotenv": "^16.6.1",
@@ -35,7 +37,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.1.4",
     "multer": "^2.0.2",
-    "nodemailer": "^7.0.12",
+    "nodemailer": "^8.0.7",
     "pdfkit": "^0.17.2",
     "razorpay": "^2.9.6",
     "uuid": "^13.0.0",

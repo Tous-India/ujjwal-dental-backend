@@ -1,5 +1,6 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import { notify } from "../../utils/notifyHelper.js";
 import Appointment from "./appointment.model.js";
 import Patient from "../patients/patient.model.js";
 import Payment from "../payments/payment.model.js";
@@ -664,6 +665,8 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     },
     "Appointment booked successfully",
   );
+
+  notify({ recipientId: patient._id, recipientModel: "Patient", type: "appointment_confirmation", title: "Appointment Confirmed", message: `Your appointment #${appointment.appointmentNumber} has been booked successfully. Token: ${appointment.tokenNumber}`, sendEmail: true, appointment: appointment._id });
 });
 
 /**
@@ -1013,6 +1016,8 @@ export const cancelAppointment = asyncHandler(async (req, res) => {
 
   // 6️⃣ Return success
   ApiResponse.success(res, appointment, "Appointment cancelled successfully");
+
+  notify({ recipientId: appointment.patient._id || appointment.patient, recipientModel: "Patient", type: "appointment_cancellation", title: "Appointment Cancelled", message: `Your appointment #${appointment.appointmentNumber} has been cancelled.${appointment.cancellationReason ? ` Reason: ${appointment.cancellationReason}` : ""}`, sendEmail: true, appointment: appointment._id });
 });
 
 /**
