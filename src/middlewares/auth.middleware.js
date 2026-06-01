@@ -204,6 +204,31 @@ const adminOnly = (req, res, next) => {
 };
 
 /**
+ * Patient Self or Admin Middleware
+ *
+ * Use AFTER `anyAuth` (which populates req.user/req.patient and req.userType).
+ * Allows any authenticated admin/staff user, OR a patient acting only on their
+ * own record (req.params.id must match the authenticated patient's id).
+ * Prevents one patient from reading/modifying another patient's data (IDOR).
+ */
+const patientSelfOrAdmin = (req, res, next) => {
+  // Admin / staff users may access any patient record
+  if (req.userType === "admin" && req.user) {
+    return next();
+  }
+
+  // Patients may only access their own record
+  if (req.userType === "patient" && req.patient) {
+    if (req.params.id && req.params.id === req.patient._id.toString()) {
+      return next();
+    }
+    return ApiResponse.error(res, "Not authorized to access this resource", 403);
+  }
+
+  return ApiResponse.error(res, "Not authorized", 401);
+};
+
+/**
  * Optional Authentication
  *
  * Tries to authenticate but doesn't fail if no token
@@ -249,5 +274,5 @@ const optionalAuth = async (req, res, next) => {
 };
 
 // Export all middleware functions
-export { authProtect, patientProtect, anyAuth, adminOnly, optionalAuth };
+export { authProtect, patientProtect, anyAuth, adminOnly, optionalAuth, patientSelfOrAdmin };
 export default authProtect;

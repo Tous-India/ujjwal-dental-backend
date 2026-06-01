@@ -1,48 +1,54 @@
 import { Router } from 'express';
 import * as patientController from './patient.controller.js';
+import authProtect, { anyAuth, patientSelfOrAdmin } from '../../middlewares/auth.middleware.js';
 
 const router = Router();
 
 /**
  * PATIENT ROUTES
  * Base path: /api/patients
- * Access: Admin (full), Patient (own data only via portal)
+ * Access:
+ *   - Admin/staff only:        list, search, create, delete, and admin-only
+ *                              sub-resource views (appointments, reports, tests)
+ *   - Admin OR patient-self:   a patient's own record and the sub-resources the
+ *                              portal reads (profile, treatments, payments,
+ *                              membership) — guarded by anyAuth + patientSelfOrAdmin
  */
 
-// Get all patients (with pagination & search)
-router.get('/', patientController.getAllPatients);
+// Get all patients (with pagination & search) — admin/staff
+router.get('/', authProtect, patientController.getAllPatients);
 
-// Search patients by name or phone
-router.get('/search', patientController.searchPatients);
+// Search patients by name or phone — admin/staff
+router.get('/search', authProtect, patientController.searchPatients);
 
-// Get single patient by ID
-router.get('/:id', patientController.getPatientById);
+// Get single patient by ID — admin/staff OR the patient themselves
+router.get('/:id', anyAuth, patientSelfOrAdmin, patientController.getPatientById);
 
-// Create new patient
-router.post('/', patientController.createPatient);
+// Create new patient — admin/staff
+router.post('/', authProtect, patientController.createPatient);
 
-// Update patient
-router.patch('/:id', patientController.updatePatient);
+// Update patient — admin/staff OR the patient themselves (own profile)
+router.patch('/:id', anyAuth, patientSelfOrAdmin, patientController.updatePatient);
 
-// Delete (deactivate) patient
-router.delete('/:id', patientController.deletePatient);
+// Delete (deactivate) patient — admin/staff
+router.delete('/:id', authProtect, patientController.deletePatient);
 
-// Get patient's appointments
-router.get('/:id/appointments', patientController.getPatientAppointments);
+// Get patient's appointments — admin/staff
+router.get('/:id/appointments', authProtect, patientController.getPatientAppointments);
 
-// Get patient's treatments
-router.get('/:id/treatments', patientController.getPatientTreatments);
+// Get patient's treatments — admin/staff OR the patient themselves
+router.get('/:id/treatments', anyAuth, patientSelfOrAdmin, patientController.getPatientTreatments);
 
-// Get patient's payments
-router.get('/:id/payments', patientController.getPatientPayments);
+// Get patient's payments — admin/staff OR the patient themselves
+router.get('/:id/payments', anyAuth, patientSelfOrAdmin, patientController.getPatientPayments);
 
-// Get patient's reports
-router.get('/:id/reports', patientController.getPatientReports);
+// Get patient's reports — admin/staff
+router.get('/:id/reports', authProtect, patientController.getPatientReports);
 
-// Get patient's tests
-router.get('/:id/tests', patientController.getPatientTests);
+// Get patient's tests — admin/staff
+router.get('/:id/tests', authProtect, patientController.getPatientTests);
 
-// Get patient's membership details
-router.get('/:id/membership', patientController.getPatientMembership);
+// Get patient's membership details — admin/staff OR the patient themselves
+router.get('/:id/membership', anyAuth, patientSelfOrAdmin, patientController.getPatientMembership);
 
 export default router;
