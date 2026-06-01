@@ -1,53 +1,87 @@
 import { Router } from "express";
 import * as appointmentController from "./appointment.controller.js";
-import authProtect from "../../middlewares/auth.middleware.js";
+import authProtect, { anyAuth, adminOnly, optionalAuth } from "../../middlewares/auth.middleware.js";
+import Appointment from "./appointment.model.js";
+import { ApiResponse } from "../../utils/ApiResponse.js";
 const router = Router();
 
 /**
  * APPOINTMENT ROUTES
  * Base path: /api/appointments
- * Access: Admin (full), Patient (own appointments)
+ * Access:
+ *   - Public:                available-slots, create (book), book-with-payment
+ *   - Staff/admin:           list / today / upcoming, update, status, check-in, complete
+ *   - Admin only:            permanent delete
+ *   - Patient-self or staff: cancel, reschedule, my-appointments-by-phone
  */
 
-// Get all appointments (with filters)
-router.get("/", appointmentController.getAllAppointments);
+/**
+ * Allow admin/staff, or the patient who owns the appointment (:id).
+ * Runs after anyAuth (which sets req.userType + req.user/req.patient).
+ */
+const appointmentSelfOrAdmin = async (req, res, next) => {
+  if (req.userType === "admin" && req.user) return next();
+  if (req.userType === "patient" && req.patient) {
+    const appt = await Appointment.findById(req.params.id).select("patient");
+    if (!appt) return ApiResponse.error(res, "Appointment not found", 404);
+    if (appt.patient?.toString() === req.patient._id.toString()) return next();
+    return ApiResponse.error(res, "Not authorized to access this resource", 403);
+  }
+  return ApiResponse.error(res, "Not authorized", 401);
+};
 
-// Get today's appointments
-router.get("/today", appointmentController.getTodayAppointments);
+/**
+ * Allow admin/staff, or a patient querying their own phone number.
+ * Runs after anyAuth.
+ */
+const phoneSelfOrAdmin = (req, res, next) => {
+  if (req.userType === "admin" && req.user) return next();
+  if (req.userType === "patient" && req.patient) {
+    if (req.params.phone === req.patient.phone) return next();
+    return ApiResponse.error(res, "Not authorized to access this resource", 403);
+  }
+  return ApiResponse.error(res, "Not authorized", 401);
+};
 
-// Get upcoming appointments
-router.get("/upcoming", appointmentController.getUpcomingAppointments);
+// Get all appointments (with filters) — staff/admin
+router.get("/", authProtect, appointmentController.getAllAppointments);
 
-// Get available slots (for booking)
+// Get today's appointments — staff/admin
+router.get("/today", authProtect, appointmentController.getTodayAppointments);
+
+// Get upcoming appointments — staff/admin
+router.get("/upcoming", authProtect, appointmentController.getUpcomingAppointments);
+
+// Get available slots (for booking) — public
 router.get("/available-slots", appointmentController.getAvailableSlots);
 
-// Create new appointment (book)
-router.post("/", appointmentController.createAppointment);
+// Create new appointment (book) — public; optionalAuth records staff id when present
+router.post("/", optionalAuth, appointmentController.createAppointment);
 
 // Book appointment after payment (public - for online booking)
 router.post("/book-with-payment", appointmentController.bookAppointmentWithPayment);
 
-// Update appointment details
-router.patch("/:id", appointmentController.updateAppointment);
+// Update appointment details — staff/admin
+router.patch("/:id", authProtect, appointmentController.updateAppointment);
 
-// Update appointment status
+// Update appointment status — staff/admin
 router.patch("/:id/status", authProtect, appointmentController.updateStatus);
 
-// Check-in patient (appointmet id)
-router.post("/:id/check-in", appointmentController.checkIn);
+// Check-in patient — staff/admin
+router.post("/:id/check-in", authProtect, appointmentController.checkIn);
 
-// Complete appointment
-router.post("/:id/complete", appointmentController.completeAppointment);
+// Complete appointment — staff/admin
+router.post("/:id/complete", authProtect, appointmentController.completeAppointment);
 
-// Cancel appointment
-router.post("/:id/cancel", appointmentController.cancelAppointment  );
+// Cancel appointment — patient-self or staff/admin
+router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, appointmentController.cancelAppointment);
 
-// Reschedule appointment
-router.post("/:id/reschedule", appointmentController.rescheduleAppointment);
+// Reschedule appointment — patient-self or staff/admin
+router.post("/:id/reschedule", anyAuth, appointmentSelfOrAdmin, appointmentController.rescheduleAppointment);
 
-// Delete appointment permanently (admin only)
-router.delete("/:id", authProtect, appointmentController.deleteAppointment);
+// Delete appointment permanently — admin only
+router.delete("/:id", authProtect, adminOnly, appointmentController.deleteAppointment);
 
-// Get single appointment by ID
-router.get("/:phone", appointmentController.getAppointmentsByPhone);
+// Get a patient's appointments by phone — patient-self or staff/admin
+router.get("/:phone", anyAuth, phoneSelfOrAdmin, appointmentController.getAppointmentsByPhone);
 export default router;

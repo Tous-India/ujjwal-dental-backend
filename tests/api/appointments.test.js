@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
 import app from "../../app.js";
-import { getAdminToken, authHeader } from "../helpers/auth.js";
+import { getAdminToken, getPatientToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
 
 describe("Appointment Lifecycle", () => {
@@ -117,5 +117,40 @@ describe("Appointment Lifecycle", () => {
     expect(res.status).toBe(200);
     const apt = res.body.data.appointment || res.body.data;
     expect(apt.status).toBe("cancelled");
+  });
+
+  it("GET /api/appointments - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).get("/api/appointments");
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("GET /api/appointments/:phone - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).get("/api/appointments/9876543210");
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("POST /api/appointments/:id/cancel - rejects unauthenticated request with 401", async () => {
+    const res = await request(app)
+      .post(`/api/appointments/${appointmentId}/cancel`)
+      .send({ reason: "no auth" });
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("GET /api/appointments/:phone - rejects a patient querying another phone with 403", async () => {
+    const patientToken = await getPatientToken(app);
+    const res = await request(app)
+      .get("/api/appointments/9999999999") // not the seeded patient's phone (9876543210)
+      .set(authHeader(patientToken));
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("GET /api/appointments/available-slots - stays public (no auth)", async () => {
+    const res = await request(app).get("/api/appointments/available-slots");
+    // 400 (missing query params) proves the handler ran without an auth block
+    expect(res.status).toBe(400);
   });
 });
