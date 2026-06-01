@@ -58,4 +58,18 @@ describe("Clinics CRUD", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
+
+  it("GET /api/clinics - stays public (no auth required)", async () => {
+    const res = await request(app).get("/api/clinics");
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("POST /api/clinics - rejects unauthenticated create with 401", async () => {
+    const res = await request(app)
+      .post("/api/clinics")
+      .send({ name: "Rogue Clinic", phone: "4445556666" });
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
 });

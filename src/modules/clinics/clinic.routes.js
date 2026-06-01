@@ -1,28 +1,29 @@
 import { Router } from "express";
 import * as clinicController from "./clinic.controller.js";
+import authProtect, { adminOnly } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
 /**
  * CLINIC ROUTES
  * Base path: /api/clinics
- * Access: Public (read), Admin (write)
+ * Access: Public (read - used by public booking + patient portal), Admin (write)
  */
 
 // Get all clinics (public - for appointment booking)
 router.get("/", clinicController.getAllClinics);
 
 // Create new clinic (Admin only)
-router.post("/", clinicController.createClinic);
+router.post("/", authProtect, adminOnly, clinicController.createClinic);
 
 // Update clinic (Admin only)
-router.patch("/:id", clinicController.updateClinic);
+router.patch("/:id", authProtect, adminOnly, clinicController.updateClinic);
 
-// Soft delete (deactivate) clinic
-router.delete("/:id", clinicController.removeClinic);
+// Soft delete (deactivate) clinic (Admin only)
+router.delete("/:id", authProtect, adminOnly, clinicController.removeClinic);
 
-// Hard delete (permanent) clinic
-router.delete("/:id/permanent", clinicController.permanentDeleteClinic);
+// Hard delete (permanent) clinic (Admin only)
+router.delete("/:id/permanent", authProtect, adminOnly, clinicController.permanentDeleteClinic);
 
 // Get single clinic by ID
 // router.get('/:id', clinicController.getClinicById);
