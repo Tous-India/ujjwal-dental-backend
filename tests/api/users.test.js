@@ -65,4 +65,18 @@ describe("Users (Staff Management)", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
+
+  it("GET /api/users - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).get("/api/users");
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("POST /api/users - rejects unauthenticated create with 401", async () => {
+    const res = await request(app)
+      .post("/api/users")
+      .send({ name: "Hacker", email: "hacker@test.com", phone: "1112223333", password: "Hacker@123", role: "admin" });
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
 });

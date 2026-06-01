@@ -1,38 +1,40 @@
 import { Router } from "express";
 import * as userController from "./user.controller.js";
 const router = Router();
-import authProtect from "../../middlewares/auth.middleware.js";
+import authProtect, { adminOnly } from "../../middlewares/auth.middleware.js";
 /**
  * USER ROUTES (Admin/Staff Management)
  * Base path: /api/users
- * Access: Admin only
+ * Access:
+ *   - Authenticated staff/admin: list users, view a user, own profile
+ *   - Admin only: create / update / delete users (account & role management)
  */
 
-// Get all users (admin/staff list)
-router.get("/", userController.getAllUsers);
+// Get all users (admin/staff list) — authenticated staff/admin
+router.get("/", authProtect, userController.getAllUsers);
 
 // Get current logged in user profile
 router.get("/me", authProtect, userController.getMe);
 
 // Update current user profile
-router.patch("/me", userController.updateMe);
+router.patch("/me", authProtect, userController.updateMe);
 
 // Change current user password
-router.patch("/me/password", userController.changePassword);
+router.patch("/me/password", authProtect, userController.changePassword);
 
-// Get single user by ID
-router.get("/:id", userController.getUserById);
+// Get single user by ID — authenticated staff/admin
+router.get("/:id", authProtect, userController.getUserById);
 
-// Create new user (admin/staff)
-router.post("/", userController.createUser);
+// Create new user (admin/staff) — admin only
+router.post("/", authProtect, adminOnly, userController.createUser);
 
-// Update user by ID
-router.patch("/:id", userController.updateUser);
+// Update user by ID (incl. role changes) — admin only
+router.patch("/:id", authProtect, adminOnly, userController.updateUser);
 
-// Delete (deactivate) user
-router.delete("/:id", authProtect, userController.deleteUser);
+// Delete (deactivate) user — admin only
+router.delete("/:id", authProtect, adminOnly, userController.deleteUser);
 
-// Permanently delete user
-router.delete("/:id/permanent", authProtect, userController.permanentDeleteUser);
+// Permanently delete user — admin only
+router.delete("/:id/permanent", authProtect, adminOnly, userController.permanentDeleteUser);
 
 export default router;
