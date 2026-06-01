@@ -35,7 +35,7 @@ const router = Router();
 router.post("/login", authLimiter, authController.login);
 
 // Patient login - sends OTP to phone
-router.post("/patient/login", authController.patientLogin);
+router.post("/patient/login", authLimiter, authController.patientLogin);
 
 // Patient login with password (given by doctor)
 router.post("/patient/login-password", authLimiter, authController.patientLoginPassword);
@@ -44,7 +44,7 @@ router.post("/patient/login-password", authLimiter, authController.patientLoginP
 router.post("/patient/verify-otp", authLimiter, authController.verifyOtp);
 
 // Resend OTP
-router.post("/patient/resend-otp", authController.resendOtp);
+router.post("/patient/resend-otp", authLimiter, authController.resendOtp);
 
 // Forgot password - sends reset link
 router.post("/forgot-password", authLimiter, authController.forgotPassword);

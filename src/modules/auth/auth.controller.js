@@ -58,9 +58,11 @@ export const login = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
-  // Check if user is active
+  // Check if user is active. Return the same generic message as other failures
+  // (no account enumeration); record the real reason server-side only.
   if (!user.isActive) {
-    return ApiResponse.error(res, "Your account has been deactivated. Please contact the administrator.", 401);
+    console.warn(`[Admin Login] Blocked - deactivated account (id: ${user._id})`);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Compare password
@@ -421,9 +423,11 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
-  // Check if patient is active
+  // Check if patient is active. Return the same generic message as other
+  // failures (no account enumeration); record the real reason server-side only.
   if (!patient.isActive) {
-    return ApiResponse.error(res, "Your account has been deactivated. Please contact the clinic.", 401);
+    console.warn(`[Patient Login] Blocked - deactivated account (id: ${patient._id})`);
+    return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   // Check if patient has a password set
