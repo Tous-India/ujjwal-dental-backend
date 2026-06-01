@@ -11,12 +11,19 @@ describe("Reports", () => {
     token = await getAdminToken(app);
   });
 
-  it("GET /api/reports - lists reports", async () => {
+  it("GET /api/reports - lists reports (admin auth)", async () => {
     const res = await request(app)
-      .get("/api/reports");
+      .get("/api/reports")
+      .set(authHeader(token));
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  it("GET /api/reports - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).get("/api/reports");
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
   });
 
   it("GET /api/reports/patient/:patientId - gets patient reports", async () => {

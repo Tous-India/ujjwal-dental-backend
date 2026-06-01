@@ -208,7 +208,8 @@ const adminOnly = (req, res, next) => {
  *
  * Use AFTER `anyAuth` (which populates req.user/req.patient and req.userType).
  * Allows any authenticated admin/staff user, OR a patient acting only on their
- * own record (req.params.id must match the authenticated patient's id).
+ * own record. The patient's id is matched against the route's patient param
+ * (`:patientId`) or the resource id (`:id`) — whichever the route uses.
  * Prevents one patient from reading/modifying another patient's data (IDOR).
  */
 const patientSelfOrAdmin = (req, res, next) => {
@@ -219,7 +220,8 @@ const patientSelfOrAdmin = (req, res, next) => {
 
   // Patients may only access their own record
   if (req.userType === "patient" && req.patient) {
-    if (req.params.id && req.params.id === req.patient._id.toString()) {
+    const targetId = req.params.patientId || req.params.id;
+    if (targetId && targetId === req.patient._id.toString()) {
       return next();
     }
     return ApiResponse.error(res, "Not authorized to access this resource", 403);

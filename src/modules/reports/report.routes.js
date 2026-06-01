@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as reportController from "./report.controller.js";
-import { authProtect, anyAuth } from "../../middlewares/auth.middleware.js";
+import { authProtect, anyAuth, patientSelfOrAdmin } from "../../middlewares/auth.middleware.js";
 import { uploadSingle } from "../../middlewares/upload.middleware.js";
 
 const router = Router();
@@ -22,11 +22,11 @@ const router = Router();
 
 // ==================== REPORT CRUD ====================
 
-// Get all reports (with filters) - Admin
-router.get("/",reportController.getAllReports);// authProtect, 
+// Get all reports (with filters) - staff/admin (PHI: never public)
+router.get("/", authProtect, reportController.getAllReports);
 
-// Get report by report number
-router.get("/number/:reportNumber", anyAuth, reportController.getReportByNumber);
+// Get report by report number - staff/admin (no per-record ownership check)
+router.get("/number/:reportNumber", authProtect, reportController.getReportByNumber);
 
 // Get single report by ID
 router.get("/:id", anyAuth, reportController.getReportById);
@@ -56,10 +56,10 @@ router.get("/:id/download", anyAuth, reportController.downloadReport);
 
 // ==================== PATIENT REPORTS ====================
 
-// Get all reports for a patient (both admin and patient can access)
-router.get("/patient/:patientId", anyAuth, reportController.getPatientReports);
+// Get all reports for a patient - admin/staff or the patient themselves
+router.get("/patient/:patientId", anyAuth, patientSelfOrAdmin, reportController.getPatientReports);
 
-// Get patient reports by category (both admin and patient can access)
-router.get("/patient/:patientId/category/:category", anyAuth, reportController.getPatientReportsByCategory);
+// Get patient reports by category - admin/staff or the patient themselves
+router.get("/patient/:patientId/category/:category", anyAuth, patientSelfOrAdmin, reportController.getPatientReportsByCategory);
 
 export default router;
