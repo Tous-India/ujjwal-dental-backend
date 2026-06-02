@@ -17,6 +17,19 @@ describe("Appointment Lifecycle", () => {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split("T")[0];
 
+  // A slot that is still in the future *today* (check-in only works for today),
+  // computed ~90 min ahead and rounded down to the half hour so it stays > now.
+  // (Assumes the suite is not run in the final ~90 min before midnight.)
+  const slotDate = new Date(Date.now() + 90 * 60 * 1000);
+  const futureSlot = `${String(slotDate.getHours()).padStart(2, "0")}:${
+    slotDate.getMinutes() < 30 ? "00" : "30"
+  }`;
+
+  // Use yesterday for the past-date rejection test
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().split("T")[0];
+
   beforeAll(async () => {
     token = await getAdminToken(app);
   });
@@ -30,7 +43,7 @@ describe("Appointment Lifecycle", () => {
         phone: testData.patient.phone,
         clinic: testData.clinic._id.toString(),
         date: todayStr,
-        timeSlot: "15:00",
+        timeSlot: futureSlot,
         type: "regular",
         reason: "Dental checkup",
         source: "walk_in",
@@ -44,7 +57,51 @@ describe("Appointment Lifecycle", () => {
     appointmentId = apt.appointmentId || apt._id;
   });
 
-  it("POST /api/appointments - rejects double booking same slot", async () => {
+  it("POST /api/appointments - allows up to 2 bookings per slot, then rejects the 3rd", async () => {
+    const book = () =>
+      request(app)
+        .post("/api/appointments")
+        .set(authHeader(token))
+        .send({
+          patientId: testData.patient._id.toString(),
+          phone: testData.patient.phone,
+          clinic: testData.clinic._id.toString(),
+          date: tomorrowStr,
+          timeSlot: "10:00",
+          type: "regular",
+          reason: "Capacity test",
+        });
+
+    // 1st and 2nd bookings fill the slot to capacity (2)
+    expect((await book()).status).toBe(201);
+    expect((await book()).status).toBe(201);
+
+    // 3rd booking must be rejected — slot is full
+    const third = await book();
+    expect(third.status).toBe(409);
+    expect(third.body.success).toBe(false);
+  });
+
+  it("POST /api/appointments - rejects a past date", async () => {
+    const res = await request(app)
+      .post("/api/appointments")
+      .set(authHeader(token))
+      .send({
+        patientId: testData.patient._id.toString(),
+        phone: testData.patient.phone,
+        clinic: testData.clinic._id.toString(),
+        date: yesterdayStr,
+        timeSlot: "10:00",
+        type: "regular",
+        reason: "Past date attempt",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("POST /api/appointments - rejects a past time slot for today", async () => {
+    // 00:00 today is always at or before the current time → always rejected
     const res = await request(app)
       .post("/api/appointments")
       .set(authHeader(token))
@@ -53,12 +110,13 @@ describe("Appointment Lifecycle", () => {
         phone: testData.patient.phone,
         clinic: testData.clinic._id.toString(),
         date: todayStr,
-        timeSlot: "15:00",
+        timeSlot: "00:00",
         type: "regular",
-        reason: "Double book attempt",
+        reason: "Past time attempt",
       });
 
-    expect([400, 409]).toContain(res.status);
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
   });
 
   it("GET /api/appointments - lists appointments", async () => {

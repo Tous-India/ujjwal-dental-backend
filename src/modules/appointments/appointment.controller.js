@@ -13,6 +13,62 @@ import { sendEmail } from "../../utils/email.js";
  * Handles appointment booking and management
  */
 
+// Maximum bookings allowed per 30-minute slot (per clinic, per date).
+const SLOT_CAPACITY = 2;
+
+/**
+ * Validate an appointment's date/timeSlot against the booking rules:
+ *  - the date must not be in the past
+ *  - if the date is today, the slot must not have already passed
+ *  - the slot must have fewer than SLOT_CAPACITY active (non-cancelled) bookings
+ *
+ * Returns `{ status, message }` when invalid, or `null` when the slot is OK.
+ */
+const validateAppointmentSlot = async ({ clinic, date, timeSlot }) => {
+  const requestedDate = new Date(date);
+  if (isNaN(requestedDate.getTime())) {
+    return { status: 400, message: "Invalid date format" };
+  }
+
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const dayStart = new Date(requestedDate);
+  dayStart.setHours(0, 0, 0, 0);
+
+  // 1) No past dates
+  if (dayStart < todayStart) {
+    return { status: 400, message: "Cannot book an appointment in the past" };
+  }
+
+  // 2) No past time slots when booking for today
+  const isToday = dayStart.getTime() === todayStart.getTime();
+  if (isToday && timeSlot) {
+    const [h, m] = String(timeSlot).split(":").map(Number);
+    const slotMinutes = h * 60 + m;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    if (slotMinutes <= nowMinutes) {
+      return { status: 400, message: "This time slot has already passed" };
+    }
+  }
+
+  // 3) Slot capacity — at most SLOT_CAPACITY active bookings per slot
+  const dayEnd = new Date(requestedDate);
+  dayEnd.setHours(23, 59, 59, 999);
+  const slotCount = await Appointment.countDocuments({
+    clinic,
+    date: { $gte: dayStart, $lte: dayEnd },
+    timeSlot,
+    status: { $ne: "cancelled" },
+  });
+  if (slotCount >= SLOT_CAPACITY) {
+    return { status: 409, message: "This time slot is fully booked" };
+  }
+
+  return null;
+};
+
 /**
  * @desc    Get all appointments
  * @route   GET /api/appointments?date=&clinic=&status=
@@ -173,16 +229,28 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     status: { $nin: ["cancelled"] },
   }).select("timeSlot");
 
-  const bookedSlots = bookedAppointments.map((apt) => apt.timeSlot);
+  // Count active bookings per slot; a slot is "booked" once it hits capacity.
+  const slotCounts = {};
+  for (const apt of bookedAppointments) {
+    slotCounts[apt.timeSlot] = (slotCounts[apt.timeSlot] || 0) + 1;
+  }
+  const bookedSlots = Object.keys(slotCounts).filter(
+    (slot) => slotCounts[slot] >= SLOT_CAPACITY
+  );
 
-  // Filter out booked slots
-  let availableSlots = allSlots.filter((slot) => !bookedSlots.includes(slot));
+  // A slot is available only if it has not reached capacity.
+  let availableSlots = allSlots.filter(
+    (slot) => (slotCounts[slot] || 0) < SLOT_CAPACITY
+  );
 
-  // If today, filter out past slots
+  // Past dates have no available slots at all.
   const now = new Date();
-  const isToday =
-    requestedDate.toDateString() === now.toDateString();
-  if (isToday) {
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  if (startOfDay < todayStart) {
+    availableSlots = [];
+  } else if (requestedDate.toDateString() === now.toDateString()) {
+    // Today: drop slots that have already passed.
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
     availableSlots = availableSlots.filter((slot) => {
       const [h, m] = slot.split(":").map(Number);
@@ -342,23 +410,12 @@ export const createAppointment = asyncHandler(async (req, res) => {
 
   /* =======================
      SLOT AVAILABILITY CHECK
+     (past date, past time, capacity)
   ======================== */
 
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const slotBooked = await Appointment.findOne({
-    clinic,
-    date: { $gte: startOfDay, $lte: endOfDay },
-    timeSlot,
-    status: { $ne: "cancelled" },
-  });
-
-  if (slotBooked) {
-    return ApiResponse.error(res, "Time slot already booked", 409);
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot });
+  if (slotError) {
+    return ApiResponse.error(res, slotError.message, slotError.status);
   }
 
   /* =======================
@@ -574,21 +631,9 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
      SLOT AVAILABILITY CHECK
   ======================== */
 
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const slotBooked = await Appointment.findOne({
-    clinic,
-    date: { $gte: startOfDay, $lte: endOfDay },
-    timeSlot,
-    status: { $ne: "cancelled" },
-  });
-
-  if (slotBooked) {
-    return ApiResponse.error(res, "Time slot already booked", 409);
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot });
+  if (slotError) {
+    return ApiResponse.error(res, slotError.message, slotError.status);
   }
 
   /* =======================

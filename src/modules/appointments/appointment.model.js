@@ -168,9 +168,9 @@ const appointmentSchema = new mongoose.Schema(
 
 // ============ INDEXES ============
 
-// Compound index to prevent double booking
-// Same clinic, date, and time slot should be unique
-appointmentSchema.index({ clinic: 1, date: 1, timeSlot: 1 }, { unique: true });
+// Compound index for fast per-slot lookups. NOT unique: each 30-minute slot
+// may hold up to SLOT_CAPACITY bookings (enforced in the controller).
+appointmentSchema.index({ clinic: 1, date: 1, timeSlot: 1 });
 
 // Index for finding appointments by patient
 appointmentSchema.index({ patient: 1, date: -1 });
