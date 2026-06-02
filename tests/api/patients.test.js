@@ -93,4 +93,22 @@ describe("Patients CRUD", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
+
+  it("PATCH /api/patients/:id/reactivate - admin/staff flips isActive back to true", async () => {
+    const res = await request(app)
+      .patch(`/api/patients/${createdPatientId}/reactivate`)
+      .set(authHeader(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const patient = res.body.data.patient || res.body.data;
+    expect(patient.isActive).toBe(true);
+  });
+
+  it("PATCH /api/patients/:id/reactivate - rejects unauthenticated request with 401", async () => {
+    const res = await request(app).patch(`/api/patients/${createdPatientId}/reactivate`);
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
 });

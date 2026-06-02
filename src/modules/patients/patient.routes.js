@@ -33,6 +33,9 @@ router.patch('/:id', anyAuth, patientSelfOrAdmin, patientController.updatePatien
 // Delete (deactivate) patient — admin/staff
 router.delete('/:id', authProtect, patientController.deletePatient);
 
+// Reactivate (un-deactivate) patient — admin/staff
+router.patch('/:id/reactivate', authProtect, patientController.reactivatePatient);
+
 // Get patient's appointments — admin/staff
 router.get('/:id/appointments', authProtect, patientController.getPatientAppointments);
 
