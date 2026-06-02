@@ -12,6 +12,7 @@
     "seed:notifications": "node src/seeds/notifications.seed.js",
     "seed:clinics": "node src/seeds/clinics.seed.js",
     "seed:coupons": "node src/seeds/coupons.seed.js",
+    "seed:treatments": "node src/seeds/treatments.seed.js",
     "test": "vitest run --config vitest.config.js",
     "test:watch": "vitest --config vitest.config.js",
     "test:coverage": "vitest run --coverage --config vitest.config.js"
