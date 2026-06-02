@@ -586,39 +586,36 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
       return ApiResponse.error(res, "Name is required for new patient", 400);
     }
 
-    // Auto-generate password: first 4 letters of name + phone last 4 digits
-    const autoPassword = (name.replace(/\s/g, "").slice(0, 4) + phone.slice(-4)) || "Patient@123";
-
+    // No password is set here — new patients log in passwordless via email OTP.
+    // (Doctor-set passwords remain supported separately via login-password.)
     patient = await Patient.create({
       name,
       phone,
       email: email?.toLowerCase() || undefined,
-      password: autoPassword,
     });
     isNewPatient = true;
 
-    // Send welcome email with login credentials
+    // Send a welcome email that directs the patient to passwordless OTP login.
     if (email) {
+      const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/login`;
       sendEmail({
         to: email,
-        subject: "Welcome to Ujjwal Dental Clinic - Your Portal Login",
+        subject: "Welcome to Ujjwal Dental Clinic - Access Your Portal",
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
             <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
             <p>Hello ${name},</p>
             <p>Welcome! Your patient portal account has been created.</p>
             <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
-              <p style="margin: 4px 0;"><strong>Email:</strong> ${email}</p>
-              <p style="margin: 4px 0;"><strong>Password:</strong> ${autoPassword}</p>
-              <p style="margin: 4px 0;"><strong>Login:</strong> <a href="${process.env.FRONTEND_URL || "http://localhost:5173"}/login">Patient Portal</a></p>
+              <p style="margin: 4px 0;">To log in, open the <a href="${loginUrl}">Patient Portal</a> and choose <strong>"Login with OTP"</strong>.</p>
+              <p style="margin: 4px 0;">Enter this email (<strong>${email}</strong>) and we'll send you a one-time code — no password needed.</p>
             </div>
-            <p>You can use these credentials to view your appointments, payments, and reports.</p>
-            <p style="color: #f44336; font-size: 13px;">Please change your password after first login.</p>
+            <p>You can view your appointments, payments, and reports there.</p>
             <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
             <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
           </div>
         `,
-        text: `Hello ${name}, Your patient portal account has been created. Email: ${email}, Password: ${autoPassword}. Login at ${process.env.FRONTEND_URL || "http://localhost:5173"}/login`,
+        text: `Hello ${name}, your patient portal account has been created. To log in, go to ${loginUrl}, choose "Login with OTP", and enter ${email} to receive a one-time code (no password needed).`,
       }).catch((err) => console.error("[Appointment] Failed to send welcome email:", err));
     }
   } else if (email && !patient.email) {
