@@ -15,11 +15,11 @@ const router = Router();
 
 // ==================== TEST MASTER (Catalog) ====================
 
-// Get all test types (catalog) - Public
-router.get("/master", testController.getAllTestTypes);
+// Get all test types (catalog) - Admin/Staff
+router.get("/master", authProtect, testController.getAllTestTypes);
 
-// Get single test type - Public
-router.get("/master/:id", testController.getTestTypeById);
+// Get single test type - Admin/Staff
+router.get("/master/:id", authProtect, testController.getTestTypeById);
 
 // Create new test type (Admin)
 router.post("/master", authProtect, testController.createTestType);

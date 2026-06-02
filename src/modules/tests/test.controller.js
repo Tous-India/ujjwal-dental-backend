@@ -17,7 +17,7 @@ import mongoose from "mongoose";
 /**
  * @desc    Get all test types (catalog)
  * @route   GET /api/tests/master
- * @access  Public
+ * @access  Admin/Staff
  */
 export const getAllTestTypes = asyncHandler(async (req, res) => {
   const { active = "true", category, sort = "name", order = "asc" } = req.query;
@@ -55,7 +55,7 @@ export const getAllTestTypes = asyncHandler(async (req, res) => {
 /**
  * @desc    Get test type by ID
  * @route   GET /api/tests/master/:id
- * @access  Public
+ * @access  Admin/Staff
  */
 export const getTestTypeById = asyncHandler(async (req, res) => {
   const { id } = req.params;
