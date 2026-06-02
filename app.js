@@ -52,8 +52,15 @@ app.use(helmet({
 // Cookie parsing middleware
 app.use(cookieParser());
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+// Body parsing middleware.
+// The `verify` hook only stashes the raw bytes on req.rawBody (needed for the
+// Razorpay webhook HMAC) — it does not change how any route receives its parsed body.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Health check endpoint

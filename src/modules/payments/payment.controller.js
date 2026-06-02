@@ -4,6 +4,8 @@ import { notify } from "../../utils/notifyHelper.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Patient from "../patients/patient.model.js";
+import MembershipPlan from "../memberships/membership.model.js";
+import SystemSettings from "../settings/settings.model.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 
@@ -283,12 +285,9 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
  * @access  Admin / Patient
  */
 export const createRazorpayOrder = asyncHandler(async (req, res) => {
-  const { invoiceId, amount, patient, clinic, type, isOnlineBooking } = req.body;
-
-  // Validation
-  if (!amount || amount <= 0) {
-    return ApiResponse.error(res, "Valid amount is required", 400);
-  }
+  // NOTE: the client-sent `amount` is intentionally ignored. The authoritative
+  // price is always resolved server-side below to prevent underpayment.
+  const { invoiceId, patient, clinic, type, isOnlineBooking, planId, isEmergency } = req.body;
 
   // For online booking/membership, patient and clinic are optional
   // For other payments, both are required
@@ -299,6 +298,42 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
   // Check if Razorpay is configured
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
     return ApiResponse.error(res, "Razorpay is not configured", 500);
+  }
+
+  // ---- Resolve the authoritative amount server-side (never trust the client) ----
+  let amount;
+  let membershipPlan = null;
+
+  if (type === "membership") {
+    if (!planId) {
+      return ApiResponse.error(res, "planId is required for membership payment", 400);
+    }
+    membershipPlan = await MembershipPlan.findById(planId);
+    if (!membershipPlan) {
+      return ApiResponse.error(res, "Membership plan not found", 404);
+    }
+    amount = membershipPlan.price;
+  } else if (type === "opd_fee" || type === "consultation") {
+    const settings = await SystemSettings.getSettings();
+    const fees = settings?.feeSettings || {};
+    if (type === "consultation") {
+      amount = fees.consultationFee;
+    } else {
+      amount = isEmergency ? fees.opdFeeEmergency : fees.opdFeeRegular;
+    }
+  } else if (invoiceId) {
+    const invoiceDoc = await Invoice.findById(invoiceId);
+    if (!invoiceDoc) {
+      return ApiResponse.error(res, "Invoice not found", 404);
+    }
+    amount = invoiceDoc.balanceDue;
+  } else {
+    return ApiResponse.error(res, "Unable to determine payment amount for this request", 400);
+  }
+
+  // Reject if the authoritative price is missing or zero
+  if (!amount || amount <= 0) {
+    return ApiResponse.error(res, "Could not determine a valid payment amount", 400);
   }
 
   // Dynamic import of Razorpay
@@ -317,7 +352,7 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
     receipt,
   });
 
-  // Create pending payment record
+  // Create pending payment record with the SERVER-derived amount
   // For online booking, patient will be linked later after successful payment
   const paymentData = {
     invoice: invoiceId,
@@ -335,6 +370,11 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
   // Only add patient if provided
   if (patient) {
     paymentData.patient = patient;
+  }
+
+  // Annotate membership purchases with the plan name
+  if (membershipPlan) {
+    paymentData.notes = `Membership: ${membershipPlan.name}`;
   }
 
   const payment = await Payment.create(paymentData);
@@ -404,6 +444,31 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Payment record not found", 404);
   }
 
+  // Confirm the amount actually paid matches what we expected at order creation.
+  // The Razorpay order is the authoritative source; compare amount_paid (paise)
+  // against the server-derived amount stored on the Payment doc. This catches
+  // partial captures and any tampering between order creation and capture.
+  try {
+    const Razorpay = (await import("razorpay")).default;
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+    const order = await razorpay.orders.fetch(razorpay_order_id);
+    const expectedPaise = Math.round(payment.amount * 100);
+
+    if (Number(order.amount_paid) !== expectedPaise) {
+      await payment.markAsFailed(
+        "AMOUNT_MISMATCH",
+        `Order amount_paid ${order.amount_paid} != expected ${expectedPaise}`
+      );
+      return ApiResponse.error(res, "Payment amount mismatch", 400);
+    }
+  } catch (err) {
+    console.error("[VerifyPayment] order amount verification failed:", err.message);
+    return ApiResponse.error(res, "Could not verify payment amount", 502);
+  }
+
   // Update payment details
   payment.razorpayPaymentId = razorpay_payment_id;
   payment.razorpaySignature = razorpay_signature;
@@ -432,18 +497,30 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
 export const razorpayWebhook = asyncHandler(async (req, res) => {
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
-  // Verify webhook signature if secret is configured
-  if (webhookSecret) {
-    const receivedSignature = req.headers["x-razorpay-signature"];
-    const expectedSignature = crypto
-      .createHmac("sha256", webhookSecret)
-      .update(JSON.stringify(req.body))
-      .digest("hex");
+  // Fail closed: never process an unverified webhook. If no secret is configured
+  // we cannot validate authenticity, so reject outright.
+  if (!webhookSecret) {
+    console.error("[Webhook] RAZORPAY_WEBHOOK_SECRET is not configured — rejecting webhook");
+    return res.status(403).json({ error: "Webhook not configured" });
+  }
 
-    if (receivedSignature !== expectedSignature) {
-      console.error("Razorpay webhook signature verification failed");
-      return res.status(400).json({ error: "Invalid signature" });
-    }
+  // Verify signature over the RAW request bytes. Razorpay signs the exact bytes
+  // it sent; re-serializing the parsed body would change key order/whitespace
+  // and break verification, so we use req.rawBody captured by the body parser.
+  const receivedSignature = req.headers["x-razorpay-signature"];
+  if (!receivedSignature || !req.rawBody) {
+    console.error("[Webhook] Missing signature header or raw body");
+    return res.status(400).json({ error: "Invalid signature" });
+  }
+
+  const expectedSignature = crypto
+    .createHmac("sha256", webhookSecret)
+    .update(req.rawBody)
+    .digest("hex");
+
+  if (expectedSignature !== receivedSignature) {
+    console.error("[Webhook] Signature verification failed");
+    return res.status(400).json({ error: "Invalid signature" });
   }
 
   const { event, payload } = req.body;
@@ -457,6 +534,20 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
       const payment = await Payment.findByRazorpayOrderId(paymentEntity.order_id);
 
       if (payment && payment.status === "pending") {
+        // Verify the captured amount matches the server-derived expected amount
+        // before marking as paid (guards against amount tampering).
+        const expectedPaise = Math.round(payment.amount * 100);
+        if (Number(paymentEntity.amount) !== expectedPaise) {
+          console.error(
+            `[Webhook] Amount mismatch for ${payment.paymentNumber}: captured ${paymentEntity.amount} != expected ${expectedPaise}`
+          );
+          await payment.markAsFailed(
+            "AMOUNT_MISMATCH",
+            `Captured ${paymentEntity.amount} != expected ${expectedPaise}`
+          );
+          break;
+        }
+
         payment.razorpayPaymentId = paymentEntity.id;
         payment.razorpayDetails = {
           ...payment.razorpayDetails,
