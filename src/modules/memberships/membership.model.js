@@ -198,14 +198,13 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
       code: 'IMP-PC',
       type: 'individual',
       tier: 'platinum',
-      description: 'Post-implant care plan with follow-up visits, ₹500 off per visit and 30% off on surgery',
+      description: 'Post-implant care plan with follow-up visits and ₹500 off per visit',
       price: 4500,
       discountPercentage: 30,
       maxMembers: 1,
       features: [
         'Post-implant care and follow-up visits',
         '₹500 off per clinic visit (coupon card)',
-        '30% off on surgery',
         'Free consultation and X-ray for implant patients',
       ],
       benefits: [
