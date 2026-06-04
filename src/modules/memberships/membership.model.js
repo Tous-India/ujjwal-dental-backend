@@ -78,12 +78,15 @@ const membershipPlanSchema = new mongoose.Schema(
     // Tier level
     tier: {
       type: String,
-      enum: ['silver', 'gold', 'platinum'],
+      enum: ['silver', 'gold', 'platinum', 'premium', 'star'],
       required: [true, 'Plan tier is required'],
     },
 
     // Description
     description: String,
+
+    // Terms & conditions (shown in the purchase modal)
+    terms: String,
 
     // Price per year
     price: {
