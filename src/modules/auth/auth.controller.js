@@ -140,11 +140,20 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Please provide email", 400);
   }
 
-  // Find user by email
-  const user = await User.findOne({ email: email.toLowerCase() });
+  // Look up the account: admin/staff (User) first, then patient. The reset
+  // link differs by area so admins land on the admin reset page while patients
+  // land on the public one.
+  const normalizedEmail = email.toLowerCase();
+  let user = await User.findOne({ email: normalizedEmail });
+  let resetPath = "/admin/reset-password";
 
   if (!user) {
-    // Don't reveal if user exists or not
+    user = await Patient.findOne({ email: normalizedEmail });
+    resetPath = "/reset-password";
+  }
+
+  if (!user) {
+    // Don't reveal if the account exists or not
     return ApiResponse.success(
       res,
       null,
@@ -165,7 +174,7 @@ export const forgotPassword = asyncHandler(async (req, res) => {
   await user.save();
 
   // Send email with reset link
-  const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+  const resetLink = `${process.env.FRONTEND_URL}${resetPath}?token=${resetToken}`;
   const resetEmailHtml = `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
@@ -226,11 +235,19 @@ export const resetPassword = asyncHandler(async (req, res) => {
   // Hash the token to compare with stored hash
   const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
-  // Find user with valid reset token
-  const user = await User.findOne({
+  // Find the account with a valid reset token — check admin/staff first, then
+  // patients, so this single endpoint serves both flows.
+  let user = await User.findOne({
     resetPasswordToken: hashedToken,
     resetPasswordExpires: { $gt: Date.now() },
   });
+
+  if (!user) {
+    user = await Patient.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+  }
 
   if (!user) {
     return ApiResponse.error(res, "Invalid or expired reset token", 400);

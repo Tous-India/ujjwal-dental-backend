@@ -84,6 +84,10 @@ const patientSchema = new mongoose.Schema(
       select: false,
     },
 
+    // For password reset (admins use this flow; patients normally log in via OTP)
+    resetPasswordToken: String,
+    resetPasswordExpires: Date,
+
     // OTP for login
     otp: {
       code: String,
