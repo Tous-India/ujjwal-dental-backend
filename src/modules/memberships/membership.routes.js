@@ -45,6 +45,10 @@ router.post("/purchase", optionalAuth, membershipController.purchaseMembership);
 // Assign membership to patient (Admin)
 router.post("/assign", authProtect, membershipController.assignMembership);
 
+// Manually assign membership — supports inactive/custom plans, custom dates,
+// amount + payment method, notes (Admin, no payment gateway)
+router.post("/assign-manual", authProtect, membershipController.assignManualMembership);
+
 // Renew patient's membership (Admin)
 router.post("/renew/:patientId", authProtect, membershipController.renewMembership);
 

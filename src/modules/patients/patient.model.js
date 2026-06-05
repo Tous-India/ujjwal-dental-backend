@@ -45,10 +45,13 @@ const emergencyContactSchema = new mongoose.Schema(
  */
 const membershipSchema = new mongoose.Schema(
   {
+    // Plan reference — nullable for manually-assigned custom/discontinued plans
     plan: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "MembershipPlan",
     },
+    // Permanent plan name string. Always stored so the record survives even if
+    // the referenced plan is later edited, deactivated, or deleted.
     planName: String,
     discountPercent: Number,
     startDate: Date,
@@ -58,6 +61,22 @@ const membershipSchema = new mongoose.Schema(
       enum: ["active", "expired", "cancelled"],
       default: "active",
     },
+
+    // -------- Manual assignment fields (admin-assigned memberships) --------
+    // Amount the patient paid (₹). For manual assignments (no Razorpay).
+    amountPaid: Number,
+    // How the patient paid for a manually-assigned membership
+    paymentMethod: {
+      type: String,
+      enum: ["cash", "card", "upi", "bank_transfer", "online"],
+    },
+    // Admin user who manually assigned this membership (null for online purchase)
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    // Optional admin notes
+    notes: String,
   },
   { _id: false },
 );

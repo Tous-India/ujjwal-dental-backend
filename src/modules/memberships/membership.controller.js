@@ -311,6 +311,151 @@ export const assignMembership = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Manually assign a membership to a patient (admin, no payment gateway)
+ * @route   POST /api/memberships/assign-manual
+ * @access  Admin
+ *
+ * Differs from assignMembership: supports inactive/discontinued plans AND fully
+ * custom plan names (for plans that no longer exist in the system), custom
+ * start/end dates, a recorded amount + payment method, and admin notes. The
+ * plan NAME is always stored as a permanent string so the record survives even
+ * if the plan is later deleted. This is separate from the Razorpay flow.
+ */
+export const assignManualMembership = asyncHandler(async (req, res) => {
+  const {
+    patientId,
+    planId, // optional — selecting an existing (active OR inactive) plan
+    planName, // optional custom name — required when no planId
+    startDate,
+    endDate,
+    amountPaid,
+    paymentMethod,
+    notes,
+  } = req.body;
+
+  // ---- Validate patient ----
+  if (!patientId || !mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "A valid patient ID is required", 400);
+  }
+
+  const patient = await Patient.findById(patientId);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  // ---- Resolve the plan (existing plan reference OR custom name) ----
+  let resolvedPlanId = null;
+  let resolvedPlanName = (planName || "").trim();
+  let discountPercent = 0;
+  let planDurationMonths = 12;
+
+  if (planId) {
+    if (!mongoose.Types.ObjectId.isValid(planId)) {
+      return ApiResponse.error(res, "Invalid plan ID", 400);
+    }
+    // Look up WITHOUT filtering on isActive so discontinued plans are allowed
+    const plan = await MembershipPlan.findById(planId);
+    if (!plan) {
+      return ApiResponse.error(res, "Membership plan not found", 404);
+    }
+    resolvedPlanId = plan._id;
+    if (!resolvedPlanName) resolvedPlanName = plan.name;
+    discountPercent = plan.discountPercentage || 0;
+    planDurationMonths = plan.durationMonths || 12;
+  }
+
+  if (!resolvedPlanName) {
+    return ApiResponse.error(
+      res,
+      "Please select a plan or enter a custom plan name",
+      400,
+    );
+  }
+
+  // ---- Resolve dates ----
+  const start = startDate ? new Date(startDate) : new Date();
+  let expiry;
+  if (endDate) {
+    expiry = new Date(endDate);
+  } else {
+    expiry = new Date(start);
+    expiry.setMonth(expiry.getMonth() + planDurationMonths);
+  }
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(expiry.getTime())) {
+    return ApiResponse.error(res, "Invalid start or end date", 400);
+  }
+  if (expiry <= start) {
+    return ApiResponse.error(res, "End date must be after the start date", 400);
+  }
+
+  // ---- Validate payment method (optional) ----
+  const validMethods = ["cash", "card", "upi", "bank_transfer", "online"];
+  if (paymentMethod && !validMethods.includes(paymentMethod)) {
+    return ApiResponse.error(res, "Invalid payment method", 400);
+  }
+
+  // ---- Move any existing membership into history ----
+  if (patient.membership && patient.membership.planName) {
+    patient.membershipHistory.push({
+      ...patient.membership.toObject(),
+      status:
+        patient.membership.status === "active"
+          ? "expired"
+          : patient.membership.status,
+    });
+  }
+
+  // ---- Assign the new membership ----
+  patient.membership = {
+    plan: resolvedPlanId, // null for custom plans
+    planName: resolvedPlanName, // permanent string — never lost
+    discountPercent,
+    startDate: start,
+    expiryDate: expiry,
+    status: "active",
+    amountPaid:
+      amountPaid !== undefined && amountPaid !== null && amountPaid !== ""
+        ? Number(amountPaid)
+        : undefined,
+    paymentMethod: paymentMethod || undefined,
+    assignedBy: req.user?._id,
+    notes: (notes || "").trim() || undefined,
+  };
+
+  await patient.save();
+
+  // Generate coupon card only when a real, active plan was selected. Custom or
+  // discontinued plans don't have valid coupon configs to generate from.
+  if (resolvedPlanId) {
+    try {
+      const plan = await MembershipPlan.findById(resolvedPlanId);
+      if (plan && plan.isActive && plan.couponConfig?.enabled) {
+        await Coupon.generateForMembership(patient, plan, start, expiry);
+      }
+    } catch (err) {
+      // Don't fail the assignment if coupon generation has an issue
+      console.error("Manual membership: coupon generation skipped:", err.message);
+    }
+  }
+
+  ApiResponse.success(
+    res,
+    {
+      patient: {
+        _id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+        membership: patient.membership,
+        hasMembership: patient.hasMembership,
+        currentDiscount: patient.currentDiscount,
+      },
+    },
+    "Membership assigned successfully",
+  );
+});
+
+/**
  * @desc    Renew patient's membership
  * @route   POST /api/memberships/renew/:patientId
  * @access  Admin
