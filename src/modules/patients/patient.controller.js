@@ -157,6 +157,11 @@ export const createPatient = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Name and phone are required", 400);
   }
 
+  // Name must not contain digits (letters, spaces and dots only)
+  if (/\d/.test(name)) {
+    return ApiResponse.error(res, "Name cannot contain numbers", 400);
+  }
+
   // Validate phone format
   const phoneRegex = /^[6-9]\d{9}$/;
   if (!phoneRegex.test(phone)) {

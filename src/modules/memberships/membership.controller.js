@@ -669,6 +669,10 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
       if (!name) {
         return ApiResponse.error(res, "Name is required for new patient", 400);
       }
+      // Name must not contain digits (letters, spaces and dots only)
+      if (/\d/.test(name)) {
+        return ApiResponse.error(res, "Name cannot contain numbers", 400);
+      }
       const autoPassword = (name.replace(/\s/g, "").slice(0, 4) + phone.slice(-4)) || "Patient@123";
       patient = await Patient.create({
         name,
