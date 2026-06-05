@@ -24,6 +24,8 @@ const allowedOrigins = [
   'http://localhost:5174',
   'http://localhost:5175',
   'https://ujjwal-dental-frontend.vercel.app',
+  'https://ujjwaldentalplanet.com',
+  'https://www.ujjwaldentalplanet.com',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
