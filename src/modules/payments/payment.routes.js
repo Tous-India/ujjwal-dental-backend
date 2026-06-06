@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as paymentController from "./payment.controller.js";
-import { authProtect, anyAuth, optionalAuth } from "../../middlewares/auth.middleware.js";
+import { authProtect, anyAuth, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -42,6 +42,9 @@ router.post("/opd", authProtect, paymentController.recordOpdPayment);
 
 // Record membership payment - Admin
 router.post("/membership", authProtect, paymentController.recordMembershipPayment);
+
+// Book a treatment to pay at the clinic (creates a pending payment) - Patient
+router.post("/pay-at-clinic", patientProtect, paymentController.payAtClinic);
 
 // ==================== RAZORPAY INTEGRATION ====================
 

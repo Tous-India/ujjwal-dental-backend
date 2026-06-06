@@ -5,6 +5,8 @@ import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Patient from "../patients/patient.model.js";
 import MembershipPlan from "../memberships/membership.model.js";
+import { TreatmentMaster } from "../treatments/treatment.model.js";
+import { generateInvoice } from "../billing/invoice.service.js";
 import SystemSettings from "../settings/settings.model.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
@@ -277,6 +279,99 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
   ApiResponse.created(res, { payment: populatedPayment }, "Membership payment recorded successfully");
 });
 
+// ==================== TREATMENT PAYMENTS (PATIENT PORTAL) ====================
+
+/**
+ * Resolve a treatment's authoritative price and the patient's server-verified
+ * membership discount. The client NEVER decides the price or the discount —
+ * both are read from the database here so a tampered request cannot underpay.
+ *
+ * @returns {Promise<{treatment, baseAmount, discountPercent, finalAmount}>}
+ * @throws  {Error} carrying a .statusCode for not-found / invalid states
+ */
+const resolveTreatmentCharge = async (treatmentId, patientDoc) => {
+  if (!treatmentId || !mongoose.Types.ObjectId.isValid(treatmentId)) {
+    const err = new Error("A valid treatmentId is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const treatment = await TreatmentMaster.findById(treatmentId);
+  if (!treatment || !treatment.isActive) {
+    const err = new Error("Treatment not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const baseAmount = treatment.price;
+  if (!baseAmount || baseAmount <= 0) {
+    const err = new Error("This treatment does not have a valid price set");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Trust ONLY the patient's stored, currently-active membership for the discount.
+  const discountPercent = patientDoc?.hasMembership ? patientDoc.currentDiscount || 0 : 0;
+  const finalAmount = Math.max(1, Math.round(baseAmount * (1 - discountPercent / 100)));
+
+  return { treatment, baseAmount, discountPercent, finalAmount };
+};
+
+/**
+ * Build the notes string for a treatment payment record.
+ */
+const treatmentNotes = ({ treatment, baseAmount, discountPercent }) =>
+  discountPercent > 0
+    ? `Treatment: ${treatment.name} (${discountPercent}% member discount on ₹${baseAmount})`
+    : `Treatment: ${treatment.name}`;
+
+/**
+ * @desc    Record a "pay at clinic" treatment booking (pending payment)
+ * @route   POST /api/payments/pay-at-clinic
+ * @access  Patient
+ */
+export const payAtClinic = asyncHandler(async (req, res) => {
+  const { treatmentId } = req.body;
+
+  // patientProtect guarantees req.patient
+  let charge;
+  try {
+    charge = await resolveTreatmentCharge(treatmentId, req.patient);
+  } catch (err) {
+    return ApiResponse.error(res, err.message, err.statusCode || 400);
+  }
+
+  const payment = await Payment.create({
+    patient: req.patient._id,
+    amount: charge.finalAmount,
+    paymentMode: "cash", // intended to be collected as cash/card at the clinic
+    type: "treatment",
+    status: "pending", // shows up as a pending payment for admin to collect
+    treatmentType: charge.treatment._id,
+    treatmentName: charge.treatment.name,
+    notes: `Pay at clinic — ${treatmentNotes(charge)}`,
+  });
+
+  ApiResponse.created(
+    res,
+    {
+      payment,
+      amount: charge.finalAmount,
+      treatmentName: charge.treatment.name,
+    },
+    "Treatment booked. Please pay at the clinic."
+  );
+
+  notify({
+    recipientId: req.patient._id,
+    recipientModel: "Patient",
+    type: "payment_received",
+    title: "Treatment Booked",
+    message: `Your treatment "${charge.treatment.name}" is booked. Please pay ₹${charge.finalAmount} at the clinic.`,
+    sendEmail: false,
+  });
+});
+
 // ==================== RAZORPAY INTEGRATION ====================
 
 /**
@@ -287,11 +382,12 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
 export const createRazorpayOrder = asyncHandler(async (req, res) => {
   // NOTE: the client-sent `amount` is intentionally ignored. The authoritative
   // price is always resolved server-side below to prevent underpayment.
-  const { invoiceId, patient, clinic, type, isOnlineBooking, planId, isEmergency } = req.body;
+  const { invoiceId, patient, clinic, type, isOnlineBooking, planId, isEmergency, treatmentId } = req.body;
 
-  // For online booking/membership, patient and clinic are optional
+  // For online booking/membership/treatment, patient and clinic are optional
+  // (treatment uses the authenticated patient + server-side pricing).
   // For other payments, both are required
-  if (!isOnlineBooking && type !== "membership" && (!patient || !clinic)) {
+  if (!isOnlineBooking && type !== "membership" && type !== "treatment" && (!patient || !clinic)) {
     return ApiResponse.error(res, "Patient and clinic are required", 400);
   }
 
@@ -303,8 +399,19 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
   // ---- Resolve the authoritative amount server-side (never trust the client) ----
   let amount;
   let membershipPlan = null;
+  let treatmentCharge = null;
+  // For treatment payments, link the authenticated patient (fallback to body).
+  const treatmentPatientId = req.patient?._id || patient;
 
-  if (type === "membership") {
+  if (type === "treatment") {
+    const patientDoc = treatmentPatientId ? await Patient.findById(treatmentPatientId) : null;
+    try {
+      treatmentCharge = await resolveTreatmentCharge(treatmentId, patientDoc);
+    } catch (err) {
+      return ApiResponse.error(res, err.message, err.statusCode || 400);
+    }
+    amount = treatmentCharge.finalAmount;
+  } else if (type === "membership") {
     if (!planId) {
       return ApiResponse.error(res, "planId is required for membership payment", 400);
     }
@@ -346,11 +453,27 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
 
   // Create Razorpay order
   const receipt = `rcpt_${Date.now()}`;
-  const order = await razorpay.orders.create({
-    amount: Math.round(amount * 100), // Convert to paise
-    currency: "INR",
-    receipt,
-  });
+  let order;
+  try {
+    order = await razorpay.orders.create({
+      amount: Math.round(amount * 100), // Convert to paise (positive integer)
+      currency: "INR",
+      receipt,
+    });
+  } catch (err) {
+    // Log the FULL Razorpay error (not a generic message) for diagnosis.
+    console.error("[CreateOrder] Razorpay order creation failed:", {
+      message: err?.message,
+      statusCode: err?.statusCode,
+      description: err?.error?.description,
+      code: err?.error?.code,
+    });
+    return ApiResponse.error(
+      res,
+      err?.error?.description || err?.message || "Failed to create payment order",
+      err?.statusCode || 502,
+    );
+  }
 
   // Create pending payment record with the SERVER-derived amount
   // For online booking, patient will be linked later after successful payment
@@ -375,6 +498,17 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
   // Annotate membership purchases with the plan name
   if (membershipPlan) {
     paymentData.notes = `Membership: ${membershipPlan.name}`;
+  }
+
+  // Annotate treatment payments and link patient + treatment now
+  if (treatmentCharge) {
+    paymentData.type = "treatment";
+    paymentData.treatmentType = treatmentCharge.treatment._id;
+    paymentData.treatmentName = treatmentCharge.treatment.name;
+    paymentData.notes = treatmentNotes(treatmentCharge);
+    if (treatmentPatientId) {
+      paymentData.patient = treatmentPatientId;
+    }
   }
 
   const payment = await Payment.create(paymentData);
@@ -475,6 +609,34 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
   await payment.markAsPaid();
 
   console.log(`[VerifyPayment] Payment ${payment._id} marked as paid. Status: ${payment.status}`);
+
+  // Auto-create an invoice for a successful treatment payment (once). The
+  // amount is already the membership-discounted amount, so we don't re-apply a
+  // discount. We create it unpaid, link it to the payment, then save the
+  // payment — the payment post-save middleware records the amount onto the
+  // invoice, marking it paid. The !payment.invoice guard prevents duplicates.
+  if (payment.type === "treatment" && payment.treatmentType && payment.patient && !payment.invoice) {
+    try {
+      const invoice = await generateInvoice({
+        patient: payment.patient,
+        clinic: payment.clinic || undefined,
+        items: [
+          {
+            itemType: "treatment",
+            description: payment.treatmentName || "Treatment",
+            unitPrice: payment.amount,
+          },
+        ],
+        amountPaid: 0,
+        paymentMethod: "razorpay",
+        applyMembershipDiscount: false,
+      });
+      payment.invoice = invoice._id;
+      await payment.save(); // post-save records the payment → invoice marked paid
+    } catch (err) {
+      console.error("Auto-invoice for treatment payment failed:", err.message);
+    }
+  }
 
   // Invoice update is handled by the post-save middleware
 

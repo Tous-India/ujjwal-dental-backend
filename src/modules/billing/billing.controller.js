@@ -97,6 +97,14 @@ export const getInvoiceById = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invoice not found", 404);
   }
 
+  // IDOR guard: a patient may only view their own invoice (admins see any)
+  if (req.userType === "patient") {
+    const ownerId = invoice.patient?._id?.toString() || invoice.patient?.toString();
+    if (!req.patient || ownerId !== req.patient._id.toString()) {
+      return ApiResponse.error(res, "Not authorized to access this invoice", 403);
+    }
+  }
+
   ApiResponse.success(res, { invoice }, "Invoice fetched successfully");
 });
 
@@ -126,7 +134,7 @@ export const getInvoiceByNumber = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const createInvoice = asyncHandler(async (req, res) => {
-  const { patient, clinic, appointment, items, discount, notes, terms } = req.body;
+  const { patient, clinic, appointment, items, discount, notes, terms, amountPaid, paymentMethod } = req.body;
 
   // Validation
   if (!patient || !clinic || !items || items.length === 0) {
@@ -182,6 +190,11 @@ export const createInvoice = asyncHandler(async (req, res) => {
     };
   });
 
+  // Optional initial payment captured on the create form. The model's
+  // calculateTotals() derives paymentStatus/status from amountPaid, so we only
+  // need to set it here (never trust a client-sent status).
+  const initialPaid = Math.max(0, Number(amountPaid) || 0);
+
   // Create invoice
   const invoice = await Invoice.create({
     patient,
@@ -189,6 +202,8 @@ export const createInvoice = asyncHandler(async (req, res) => {
     appointment,
     items: processedItems,
     discount: discount || { percentage: 0, amount: 0 },
+    amountPaid: initialPaid,
+    ...(initialPaid > 0 && paymentMethod ? { paymentMethod } : {}),
     notes,
     terms,
     createdBy: req.user?._id,
@@ -468,6 +483,45 @@ export const recordPayment = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get the logged-in patient's own invoices
+ * @route   GET /api/billing/invoices/my-invoices
+ * @access  Patient (Bearer token)
+ *
+ * Derives the patient from the auth token (req.patient) — never from a client
+ * param — so a patient can ONLY ever see their own invoices (IDOR-safe).
+ */
+export const getMyInvoices = asyncHandler(async (req, res) => {
+  const patientId = req.patient?._id;
+  if (!patientId) {
+    return ApiResponse.error(res, "Not authorized", 401);
+  }
+
+  const { page = 1, limit = 50, status } = req.query;
+  const query = { patient: patientId };
+  if (status) {
+    query.status = status;
+  }
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const [invoices, total] = await Promise.all([
+    Invoice.find(query)
+      .populate("clinic", "name code")
+      .sort({ invoiceDate: -1, createdAt: -1 }) // newest first
+      .skip(skip)
+      .limit(parseInt(limit)),
+    Invoice.countDocuments(query),
+  ]);
+
+  ApiResponse.paginated(res, invoices, {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    total,
+    totalPages: Math.ceil(total / parseInt(limit)),
+  });
+});
+
+/**
  * @desc    Get pending invoices for a patient
  * @route   GET /api/billing/invoices/patient/:patientId/pending
  * @access  Admin
@@ -501,53 +555,33 @@ export const getOverdueInvoices = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const getBillingStats = asyncHandler(async (req, res) => {
-  const { clinic, from, to } = req.query;
+  const { clinic, from, to, patient } = req.query;
 
-  // Date range (default: current month)
-  const startDate = from ? new Date(from) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-  const endDate = to ? new Date(to) : new Date();
+  // Build match query (same aggregation the Billing page uses).
+  const matchQuery = { status: { $ne: "cancelled" } };
 
-  // Build match query
-  const matchQuery = {
-    createdAt: { $gte: startDate, $lte: endDate },
-    status: { $ne: "cancelled" },
-  };
+  // Date window: use an explicit range when given, else default to the current
+  // month — EXCEPT when scoped to a single patient, where we want the patient's
+  // all-time outstanding balance (so it matches the per-invoice balances shown
+  // on the Billing page). Callers without `patient` are unaffected.
+  let startDate = null;
+  let endDate = null;
+  if (from || to || !patient) {
+    startDate = from ? new Date(from) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    endDate = to ? new Date(to) : new Date();
+    matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+  }
+
+  if (patient && mongoose.Types.ObjectId.isValid(patient)) {
+    matchQuery.patient = new mongoose.Types.ObjectId(patient);
+  }
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     matchQuery.clinic = new mongoose.Types.ObjectId(clinic);
   }
 
-  const stats = await Invoice.aggregate([
-    { $match: matchQuery },
-    {
-      $group: {
-        _id: null,
-        totalInvoices: { $sum: 1 },
-        totalAmount: { $sum: "$grandTotal" },
-        totalPaid: { $sum: "$amountPaid" },
-        totalDue: { $sum: "$balanceDue" },
-        paidCount: {
-          $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] },
-        },
-        partialCount: {
-          $sum: { $cond: [{ $eq: ["$paymentStatus", "partial"] }, 1, 0] },
-        },
-        unpaidCount: {
-          $sum: { $cond: [{ $eq: ["$paymentStatus", "unpaid"] }, 1, 0] },
-        },
-      },
-    },
-  ]);
-
-  const result = stats[0] || {
-    totalInvoices: 0,
-    totalAmount: 0,
-    totalPaid: 0,
-    totalDue: 0,
-    paidCount: 0,
-    partialCount: 0,
-    unpaidCount: 0,
-  };
+  // Shared aggregation (same source the patient billing summary uses).
+  const result = await Invoice.getStats(matchQuery);
 
   ApiResponse.success(
     res,
@@ -557,6 +591,33 @@ export const getBillingStats = asyncHandler(async (req, res) => {
     },
     "Billing statistics fetched successfully"
   );
+});
+
+/**
+ * @desc    Get the logged-in patient's own billing summary (outstanding balance)
+ * @route   GET /api/billing/my-summary
+ * @access  Patient (Bearer token)
+ *
+ * Derives the patient from the auth token (req.patient) — never from a client
+ * param — so a patient can ONLY ever see their own totals (IDOR-safe).
+ * Uses the exact same invoice aggregation as the admin billing stats, scoped to
+ * this patient's all-time non-cancelled invoices, so "Pending Amount" equals the
+ * sum of per-invoice balanceDue (matches the admin Billing page).
+ */
+export const getMyBillingSummary = asyncHandler(async (req, res) => {
+  const patientId = req.patient?._id;
+  if (!patientId) {
+    return ApiResponse.error(res, "Not authorized", 401);
+  }
+
+  const matchQuery = {
+    patient: new mongoose.Types.ObjectId(patientId),
+    status: { $ne: "cancelled" },
+  };
+
+  const stats = await Invoice.getStats(matchQuery);
+
+  ApiResponse.success(res, { stats }, "Billing summary fetched successfully");
 });
 
 /**
@@ -577,6 +638,14 @@ export const downloadInvoicePdf = asyncHandler(async (req, res) => {
 
   if (!invoice) {
     return ApiResponse.error(res, "Invoice not found", 404);
+  }
+
+  // IDOR guard: a patient may only download their own invoice (admins see any)
+  if (req.userType === "patient") {
+    const ownerId = invoice.patient?._id?.toString() || invoice.patient?.toString();
+    if (!req.patient || ownerId !== req.patient._id.toString()) {
+      return ApiResponse.error(res, "Not authorized to access this invoice", 403);
+    }
   }
 
   // Create PDF document
@@ -609,6 +678,17 @@ export const downloadInvoicePdf = asyncHandler(async (req, res) => {
   if (invoice.clinic?.phone) {
     doc.text(`Phone: ${invoice.clinic.phone}`, { align: "center" });
   }
+
+  // Legal company line (payment gateway is registered under this company)
+  doc.moveDown(0.4);
+  doc.fontSize(9).font("Helvetica-Oblique").fillColor("#555555");
+  doc.text(
+    "Ujjwal Dental Clinic — A unit of Healing Fairy Health Care Pvt. Ltd.",
+    leftMargin,
+    doc.y,
+    { align: "center", width: pageWidth },
+  );
+  doc.fillColor("black").font("Helvetica");
 
   doc.moveDown(1.5);
   doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");

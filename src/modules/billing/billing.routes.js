@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as billingController from "./billing.controller.js";
-import { authProtect, anyAuth } from "../../middlewares/auth.middleware.js";
+import { authProtect, anyAuth, patientProtect } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -29,6 +29,13 @@ router.get("/overdue", authProtect, billingController.getOverdueInvoices);
 
 // Get invoice by invoice number
 router.get("/invoices/number/:invoiceNumber", authProtect, billingController.getInvoiceByNumber);
+
+// Get the logged-in patient's own invoices (token-derived, IDOR-safe).
+// MUST be registered before "/invoices/:id" so "my-invoices" isn't treated as an id.
+router.get("/invoices/my-invoices", patientProtect, billingController.getMyInvoices);
+
+// Get the logged-in patient's own billing summary / outstanding balance (token-derived, IDOR-safe).
+router.get("/my-summary", patientProtect, billingController.getMyBillingSummary);
 
 // Get single invoice by ID
 router.get("/invoices/:id", anyAuth, billingController.getInvoiceById);

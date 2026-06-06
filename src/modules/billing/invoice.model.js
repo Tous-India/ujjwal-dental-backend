@@ -18,10 +18,11 @@ import mongoose from "mongoose";
 
 const lineItemSchema = new mongoose.Schema(
   {
-    // Item type
+    // Item type / category. "opd_fee" kept for backwards-compatibility with
+    // existing invoices; "surgery" and "medicine" added per billing categories.
     itemType: {
       type: String,
-      enum: ["treatment", "test", "opd_fee", "membership", "other"],
+      enum: ["treatment", "surgery", "test", "opd_fee", "membership", "medicine", "other"],
       required: true,
     },
 
@@ -111,11 +112,12 @@ const invoiceSchema = new mongoose.Schema(
       required: [true, "Patient is required"],
     },
 
-    // Clinic
+    // Clinic. Optional: auto-generated invoices for online membership/treatment
+    // payments may not be tied to a specific clinic. Admin-created invoices still
+    // pass it. (Existing invoices already have a clinic — unaffected.)
     clinic: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Clinic",
-      required: [true, "Clinic is required"],
     },
 
     // Related appointment (optional)
@@ -193,6 +195,13 @@ const invoiceSchema = new mongoose.Schema(
       type: String,
       enum: ["unpaid", "partial", "paid"],
       default: "unpaid",
+    },
+
+    // Payment method captured at creation when an initial amount is paid.
+    // Optional — older invoices simply won't have it.
+    paymentMethod: {
+      type: String,
+      enum: ["cash", "card", "upi", "online", "razorpay", "pay-at-clinic"],
     },
 
     // Notes
@@ -373,6 +382,52 @@ invoiceSchema.methods.cancelInvoice = function (userId, reason) {
 };
 
 // ============ STATICS ============
+
+/**
+ * Aggregate invoice statistics for a given match query.
+ *
+ * Single source of truth for billing totals — used by the admin billing stats
+ * endpoint AND the patient's own billing summary, so "Balance Due" / pending
+ * amounts are always computed the same way (sum of per-invoice balanceDue).
+ *
+ * @param {Object} matchQuery - Mongo match stage (e.g. patient/clinic/date/status)
+ * @returns {Promise<Object>} { totalInvoices, totalAmount, totalPaid, totalDue, paidCount, partialCount, unpaidCount }
+ */
+invoiceSchema.statics.getStats = async function (matchQuery = {}) {
+  const stats = await this.aggregate([
+    { $match: matchQuery },
+    {
+      $group: {
+        _id: null,
+        totalInvoices: { $sum: 1 },
+        totalAmount: { $sum: "$grandTotal" },
+        totalPaid: { $sum: "$amountPaid" },
+        totalDue: { $sum: "$balanceDue" },
+        paidCount: {
+          $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] },
+        },
+        partialCount: {
+          $sum: { $cond: [{ $eq: ["$paymentStatus", "partial"] }, 1, 0] },
+        },
+        unpaidCount: {
+          $sum: { $cond: [{ $eq: ["$paymentStatus", "unpaid"] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+
+  return (
+    stats[0] || {
+      totalInvoices: 0,
+      totalAmount: 0,
+      totalPaid: 0,
+      totalDue: 0,
+      paidCount: 0,
+      partialCount: 0,
+      unpaidCount: 0,
+    }
+  );
+};
 
 /**
  * Get pending invoices for a patient

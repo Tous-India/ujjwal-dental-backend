@@ -36,6 +36,9 @@ router.delete('/:id', authProtect, patientController.deletePatient);
 // Reactivate (un-deactivate) patient — admin/staff
 router.patch('/:id/reactivate', authProtect, patientController.reactivatePatient);
 
+// Admin: set or reset a patient's password (set new OR generate temp). Never views it.
+router.patch('/:id/reset-password', authProtect, patientController.resetPatientPassword);
+
 // Get patient's appointments — admin/staff
 router.get('/:id/appointments', authProtect, patientController.getPatientAppointments);
 
@@ -44,6 +47,9 @@ router.get('/:id/treatments', anyAuth, patientSelfOrAdmin, patientController.get
 
 // Get patient's payments — admin/staff OR the patient themselves
 router.get('/:id/payments', anyAuth, patientSelfOrAdmin, patientController.getPatientPayments);
+
+// Get patient's invoices — admin/staff OR the patient themselves
+router.get('/:id/invoices', anyAuth, patientSelfOrAdmin, patientController.getPatientInvoices);
 
 // Get patient's reports — admin/staff
 router.get('/:id/reports', authProtect, patientController.getPatientReports);

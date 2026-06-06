@@ -39,6 +39,15 @@ const paymentSchema = new mongoose.Schema(
       ref: "Appointment",
     },
 
+    // Related treatment from the catalog (optional - set for treatment payments
+    // booked by patients from the portal). treatmentName is stored alongside so
+    // the label survives even if the catalog entry is later edited/removed.
+    treatmentType: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "TreatmentMaster",
+    },
+    treatmentName: String,
+
     // Clinic where payment was made (optional for online membership purchases)
     clinic: {
       type: mongoose.Schema.Types.ObjectId,

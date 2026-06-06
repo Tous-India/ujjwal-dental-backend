@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { nextDailyToken, istDateKey } from "./appointmentToken.js";
 
 /**
  * APPOINTMENT MODEL
@@ -53,11 +54,54 @@ const appointmentSchema = new mongoose.Schema(
       type: Number,
     },
 
+    // Created-date key (YYYY-MM-DD, IST) the token series belongs to. Lets tokens
+    // be queried/displayed per clinic per day, and backs the uniqueness index.
+    tokenDateKey: {
+      type: String,
+    },
+
     // Appointment type
     type: {
       type: String,
       enum: ["regular", "emergency", "follow_up"],
       default: "regular",
+    },
+
+    // Urgency. Source of truth for whether this is an emergency visit (drives
+    // the emergency fee + badges). Kept separate from `type` so urgency and
+    // regular/follow-up classification don't collide.
+    appointmentType: {
+      type: String,
+      enum: ["regular", "emergency"],
+      default: "regular",
+    },
+
+    // Visit type: OPD/consultation vs a specific treatment procedure.
+    // Defaults to "opd" so existing/patient-booked appointments behave as before.
+    visitType: {
+      type: String,
+      enum: ["opd", "treatment"],
+      default: "opd",
+    },
+
+    // Treatment (catalog) for treatment visits — nullable for OPD visits.
+    treatmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "TreatmentMaster",
+    },
+
+    // Fee for this visit (auto-filled from settings/treatment, admin-editable).
+    fee: {
+      type: Number,
+    },
+
+    // Optional fee note (e.g. "2nd sitting, crown fitting").
+    feeNotes: String,
+
+    // Auto-generated invoice linked to this appointment.
+    invoice: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
     },
 
     // Status tracking
@@ -181,6 +225,14 @@ appointmentSchema.index({ date: 1, status: 1 });
 // Index for appointment number lookups
 // appointmentSchema.index({ appointmentNumber: 1 });
 
+// Safety net: the DB itself rejects any duplicate token within a clinic + day.
+// Partial filter so it only applies to docs that have a tokenDateKey (legacy
+// appointments created before this field exists are excluded, avoiding clashes).
+appointmentSchema.index(
+  { clinic: 1, tokenDateKey: 1, tokenNumber: 1 },
+  { unique: true, partialFilterExpression: { tokenDateKey: { $exists: true } } },
+);
+
 // ============ PRE-SAVE MIDDLEWARE ============
 
 /**
@@ -216,20 +268,13 @@ appointmentSchema.pre("save", async function () {
   const clinicCode = clinic.code || clinic.name?.split(/[\s-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 3) || "UDC";
   this.appointmentNumber = `${clinicCode}-${year}${month}-${serial}`;
 
-  // Token number for the day
-  const startOfDay = new Date(this.date);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(this.date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const todayCount = await mongoose.model("Appointment").countDocuments({
-    clinic: this.clinic,
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $ne: "cancelled" },
-  });
-
-  this.tokenNumber = todayCount + 1;
+  // Token number — single shared, atomic source for BOTH booking paths
+  // (website + admin). Series is per clinic, keyed by the CREATED date in IST,
+  // so it resets at IST midnight automatically. nextDailyToken uses an atomic
+  // counter (findByIdAndUpdate $inc) and is collision-proof under concurrency.
+  const dateKey = istDateKey(); // created "now" in IST
+  this.tokenDateKey = dateKey;
+  this.tokenNumber = await nextDailyToken(this.clinic, dateKey);
 });
 
 // ============ METHODS ============

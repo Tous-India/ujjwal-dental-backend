@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Patient from "./patient.model.js";
@@ -103,7 +104,7 @@ export const searchPatients = asyncHandler(async (req, res) => {
 
   // Get patients
   const patients = await Patient.find(query)
-    .select("name phone email hasMembership")
+    .select("name phone email membership hasMembership currentDiscount")
     .limit(parseInt(limit))
     .sort({ name: 1 });
 
@@ -308,6 +309,77 @@ export const reactivatePatient = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Generate a strong temporary password (no ambiguous chars). Guaranteed to
+ * include at least one letter and one digit, length 14, so it passes the
+ * strength policy below.
+ */
+const generateTempPassword = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const bytes = crypto.randomBytes(12);
+  let pw = "";
+  for (let i = 0; i < 12; i++) pw += chars[bytes[i] % chars.length];
+  return `${pw}a7`; // ensures a letter + a digit
+};
+
+// New-password policy: min 10 chars, at least one letter and one number
+// (matches the patient/admin reset-password flows).
+const isStrongPassword = (pw) =>
+  typeof pw === "string" &&
+  pw.length >= 10 &&
+  /[A-Za-z]/.test(pw) &&
+  /[0-9]/.test(pw);
+
+/**
+ * @desc    Admin: set or reset a patient's password (never view it).
+ *          - { generate: true }  → server creates a strong temp password,
+ *            hashes & stores it, and returns it ONCE so the admin can share it.
+ *          - { newPassword }     → admin sets a specific password (validated).
+ *          The password is hashed by the model's pre-save bcrypt hook; the
+ *          plaintext is never stored, logged, or returned beyond the one-time
+ *          temp value, and the hash is never returned.
+ * @route   PATCH /api/patients/:id/reset-password
+ * @access  Admin
+ */
+export const resetPatientPassword = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { newPassword, generate } = req.body;
+
+  const patient = await Patient.findById(id);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  let plaintext;
+  if (generate) {
+    plaintext = generateTempPassword();
+  } else {
+    if (!isStrongPassword(newPassword)) {
+      return ApiResponse.error(
+        res,
+        "Password must be at least 10 characters and include at least one letter and one number",
+        400,
+      );
+    }
+    plaintext = newPassword;
+  }
+
+  // The pre-save hook hashes `password` with bcrypt (cost 12).
+  patient.password = plaintext;
+  await patient.save();
+
+  // Return only the patient id, plus the temp password ONCE when generated.
+  // Never return the hash; never log the plaintext.
+  return ApiResponse.success(
+    res,
+    {
+      patientId: patient._id,
+      ...(generate ? { temporaryPassword: plaintext } : {}),
+    },
+    generate ? "Temporary password generated" : "Password updated successfully",
+  );
+});
+
+/**
  * @desc    Get patient's appointments
  * @route   GET /api/patients/:id/appointments
  * @access  Admin
@@ -411,6 +483,7 @@ export const getPatientPayments = asyncHandler(async (req, res) => {
   const [payments, total] = await Promise.all([
     Payment.find({ patient: id })
       .populate("invoice", "invoiceNumber grandTotal")
+      .populate("treatmentType", "name")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit)),

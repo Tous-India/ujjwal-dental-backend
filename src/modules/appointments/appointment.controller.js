@@ -5,6 +5,8 @@ import Appointment from "./appointment.model.js";
 import Patient from "../patients/patient.model.js";
 import Payment from "../payments/payment.model.js";
 import SystemSettings from "../settings/settings.model.js";
+import { TreatmentMaster } from "../treatments/treatment.model.js";
+import { generateInvoice } from "../billing/invoice.service.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 
@@ -13,18 +15,30 @@ import { sendEmail } from "../../utils/email.js";
  * Handles appointment booking and management
  */
 
-// Maximum bookings allowed per 30-minute slot (per clinic, per date).
-const SLOT_CAPACITY = 2;
+// Base seats per 30-minute slot (per clinic, per date). Emergency bookings get
+// one extra seat on top, so an emergency patient can take the 3rd seat in a slot
+// that already has 2 regular bookings. Change these to adjust capacity later.
+const SLOT_BASE_CAPACITY = 2;
+const EMERGENCY_EXTRA = 1;
+
+/**
+ * Effective seats for a slot given the incoming booking type:
+ *  - "emergency" → SLOT_BASE_CAPACITY + EMERGENCY_EXTRA (e.g. 3)
+ *  - anything else → SLOT_BASE_CAPACITY (e.g. 2)
+ */
+const slotCapacityFor = (bookingType) =>
+  SLOT_BASE_CAPACITY + (bookingType === "emergency" ? EMERGENCY_EXTRA : 0);
 
 /**
  * Validate an appointment's date/timeSlot against the booking rules:
  *  - the date must not be in the past
  *  - if the date is today, the slot must not have already passed
- *  - the slot must have fewer than SLOT_CAPACITY active (non-cancelled) bookings
+ *  - the slot must have fewer than the effective capacity of active
+ *    (non-cancelled) bookings. Capacity is 2 for regular, 3 for emergency.
  *
  * Returns `{ status, message }` when invalid, or `null` when the slot is OK.
  */
-const validateAppointmentSlot = async ({ clinic, date, timeSlot }) => {
+const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) => {
   const requestedDate = new Date(date);
   if (isNaN(requestedDate.getTime())) {
     return { status: 400, message: "Invalid date format" };
@@ -53,7 +67,9 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot }) => {
     }
   }
 
-  // 3) Slot capacity — at most SLOT_CAPACITY active bookings per slot
+  // 3) Slot capacity — at most `capacity` active bookings per slot (2 regular,
+  //    3 when this incoming booking is an emergency).
+  const capacity = slotCapacityFor(bookingType);
   const dayEnd = new Date(requestedDate);
   dayEnd.setHours(23, 59, 59, 999);
   const slotCount = await Appointment.countDocuments({
@@ -62,8 +78,14 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot }) => {
     timeSlot,
     status: { $ne: "cancelled" },
   });
-  if (slotCount >= SLOT_CAPACITY) {
-    return { status: 409, message: "This time slot is fully booked" };
+  if (slotCount >= capacity) {
+    return {
+      status: 409,
+      message:
+        bookingType === "emergency"
+          ? "This time slot is fully booked (no emergency seat left)"
+          : "This time slot is fully booked",
+    };
   }
 
   return null;
@@ -75,7 +97,7 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot }) => {
  * @access  Admin
  */
 export const getAllAppointments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, date, clinic, status } = req.query;
+  const { page = 1, limit = 10, date, clinic, status, appointmentType } = req.query;
 
   // 1. Build filter query from params
   const filter = {};
@@ -86,6 +108,10 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
 
   if (status) {
     filter.status = status;
+  }
+
+  if (appointmentType) {
+    filter.appointmentType = appointmentType;
   }
 
   if (date) {
@@ -105,6 +131,8 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     Appointment.find(filter)
       .populate("patient", "name phone")
       .populate("clinic", "name code")
+      .populate("treatmentId", "name")
+      .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus")
       .sort({ date: -1, timeSlot: 1 })
       .skip(skip)
       .limit(Number(limit)),
@@ -187,7 +215,11 @@ export const getUpcomingAppointments = asyncHandler(async (req, res) => {
  * @access  Public
  */
 export const getAvailableSlots = asyncHandler(async (req, res) => {
-  const { clinic: clinicId, date } = req.query;
+  const { clinic: clinicId, date, bookingType } = req.query;
+  // Effective capacity for THIS request: 3 when the patient is booking an
+  // emergency (an emergency may take the 3rd seat), else 2. Defaulting to
+  // regular keeps existing callers (e.g. admin) on the base capacity.
+  const capacity = slotCapacityFor(bookingType);
 
   if (!clinicId || !date) {
     return ApiResponse.error(res, "Clinic and date are required", 400);
@@ -235,12 +267,12 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     slotCounts[apt.timeSlot] = (slotCounts[apt.timeSlot] || 0) + 1;
   }
   const bookedSlots = Object.keys(slotCounts).filter(
-    (slot) => slotCounts[slot] >= SLOT_CAPACITY
+    (slot) => slotCounts[slot] >= capacity
   );
 
-  // A slot is available only if it has not reached capacity.
+  // A slot is available only if it has not reached the effective capacity.
   let availableSlots = allSlots.filter(
-    (slot) => (slotCounts[slot] || 0) < SLOT_CAPACITY
+    (slot) => (slotCounts[slot] || 0) < capacity
   );
 
   // Past dates have no available slots at all.
@@ -263,6 +295,8 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     {
       date: requestedDate.toISOString().split("T")[0],
       clinic: clinicId,
+      bookingType: bookingType === "emergency" ? "emergency" : "regular",
+      capacity,
       totalSlots: allSlots.length,
       bookedSlots: bookedSlots.length,
       availableSlots,
@@ -332,6 +366,8 @@ export const getAppointmentsByPhone = asyncHandler(async (req, res) => {
     .populate("patient", "name phone")
     .populate("clinic", "name code")
     .populate("createdBy", "name")
+    .populate("treatmentId", "name")
+    .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus")
     .sort({ date: -1 });
 
   ApiResponse.success(res, { appointments: appointments || [] }, appointments.length ? "Appointments fetched successfully" : "No appointments yet");
@@ -346,8 +382,17 @@ export const getAppointmentsByPhone = asyncHandler(async (req, res) => {
 export const createAppointment = asyncHandler(async (req, res) => {
   const {
     patientId, name, phone, clinic, date, timeSlot, reason, type,
-    isFree, opdFee: requestOpdFee, opdFeePaid, source, notes
+    isFree, opdFee: requestOpdFee, opdFeePaid, source, notes,
+    visitType, treatmentId, fee, feeNotes, appointmentType, bookingType,
   } = req.body;
+
+  // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
+  // Drives the emergency OPD fee AND the slot capacity (2 regular / 3 emergency).
+  const urgency = bookingType || appointmentType || "regular";
+  if (!["regular", "emergency"].includes(urgency)) {
+    return ApiResponse.error(res, "bookingType must be 'regular' or 'emergency'", 400);
+  }
+  const isEmergency = urgency === "emergency";
 
   /* =======================
      BASIC VALIDATIONS
@@ -413,7 +458,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
      (past date, past time, capacity)
   ======================== */
 
-  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot });
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
   if (slotError) {
     return ApiResponse.error(res, slotError.message, slotError.status);
   }
@@ -422,22 +467,52 @@ export const createAppointment = asyncHandler(async (req, res) => {
      OPD FEE CALCULATION
   ======================== */
 
-  let opdFee;
   let appointmentIsFree = isFree || false;
   let appointmentOpdFeePaid = opdFeePaid || false;
 
-  // If marked as free appointment, set fee to 0 and mark as paid
+  // Visit type: "treatment" shows treatment fee; otherwise OPD/consultation.
+  const appointmentVisitType = visitType === "treatment" ? "treatment" : "opd";
+
+  let resolvedFee; // base fee stored on the appointment (pre membership discount)
+  let lineItemType; // invoice line-item category
+  let lineItemDescription;
+  let treatmentDoc = null;
+
   if (appointmentIsFree) {
-    opdFee = 0;
+    // Free appointment — no fee, no invoice, marked paid
+    resolvedFee = 0;
     appointmentOpdFeePaid = true;
-  } else if (requestOpdFee !== undefined) {
-    // Use provided OPD fee from admin
-    opdFee = requestOpdFee;
+    lineItemType = appointmentVisitType === "treatment" ? "treatment" : "opd_fee";
+    lineItemDescription = appointmentVisitType === "treatment" ? "Treatment" : "OPD Consultation";
+  } else if (appointmentVisitType === "treatment") {
+    // Treatment visit — fee from the treatment price, admin-editable override
+    if (!treatmentId || !mongoose.Types.ObjectId.isValid(treatmentId)) {
+      return ApiResponse.error(res, "A treatment is required for a treatment visit", 400);
+    }
+    treatmentDoc = await TreatmentMaster.findById(treatmentId);
+    if (!treatmentDoc) {
+      return ApiResponse.error(res, "Treatment not found", 404);
+    }
+    resolvedFee =
+      fee !== undefined && fee !== null && fee !== ""
+        ? Number(fee)
+        : Number(treatmentDoc.price) || 0;
+    if (!resolvedFee || resolvedFee <= 0) {
+      return ApiResponse.error(res, "A valid treatment fee is required", 400);
+    }
+    lineItemType = "treatment";
+    lineItemDescription = treatmentDoc.name;
   } else {
-    // Calculate from settings
-    const settings = await SystemSettings.getSettings();
-    const feeSettings = settings.feeSettings || { opdFeeRegular: 300, opdFeeEmergency: 500 };
-    opdFee = type === "emergency" ? feeSettings.opdFeeEmergency : feeSettings.opdFeeRegular;
+    // OPD / consultation — fee from admin override or settings (regular/emergency)
+    if (requestOpdFee !== undefined && requestOpdFee !== null && requestOpdFee !== "") {
+      resolvedFee = Number(requestOpdFee);
+    } else {
+      const settings = await SystemSettings.getSettings();
+      const feeSettings = settings.feeSettings || { opdFeeRegular: 300, opdFeeEmergency: 500 };
+      resolvedFee = isEmergency ? feeSettings.opdFeeEmergency : feeSettings.opdFeeRegular;
+    }
+    lineItemType = "opd_fee";
+    lineItemDescription = "OPD Consultation";
   }
 
   /* =======================
@@ -453,7 +528,13 @@ export const createAppointment = asyncHandler(async (req, res) => {
     timeSlot,
     reason,
     type,
-    opdFee,
+    appointmentType: isEmergency ? "emergency" : "regular",
+    visitType: appointmentVisitType,
+    ...(appointmentVisitType === "treatment" ? { treatmentId } : {}),
+    fee: resolvedFee,
+    feeNotes: feeNotes || undefined,
+    // opdFee kept in sync for backward-compatibility with existing views
+    opdFee: resolvedFee,
     isFree: appointmentIsFree,
     opdFeePaid: appointmentOpdFeePaid,
     source: source || "walk_in",
@@ -462,6 +543,39 @@ export const createAppointment = asyncHandler(async (req, res) => {
     // ❌ DO NOT set status
     // ❌ DO NOT set tokenNumber
   });
+
+  /* =======================
+     AUTO-INVOICE (pay at clinic, unpaid)
+     Skipped for free appointments. Membership discount, if any, is applied
+     server-side inside generateInvoice.
+  ======================== */
+
+  let invoiceId = null;
+  if (!appointmentIsFree && resolvedFee > 0) {
+    try {
+      const invoice = await generateInvoice({
+        patient, // pass the loaded doc (has hasMembership/currentDiscount virtuals)
+        clinic,
+        appointment: appointment._id,
+        items: [
+          {
+            itemType: lineItemType,
+            description: lineItemDescription,
+            unitPrice: resolvedFee,
+          },
+        ],
+        amountPaid: 0,
+        paymentMethod: "pay-at-clinic",
+        createdBy: req.user?._id,
+      });
+      invoiceId = invoice._id;
+      appointment.invoice = invoice._id;
+      await appointment.save();
+    } catch (err) {
+      // Don't fail the booking if invoice generation hiccups; log for follow-up.
+      console.error("Auto-invoice for appointment failed:", err.message);
+    }
+  }
 
   /* =======================
      RESPONSE
@@ -474,9 +588,13 @@ export const createAppointment = asyncHandler(async (req, res) => {
       appointmentNumber: appointment.appointmentNumber,
       tokenNumber: appointment.tokenNumber,
       status: appointment.status,
+      visitType: appointment.visitType,
+      appointmentType: appointment.appointmentType,
+      fee: appointment.fee,
       opdFee: appointment.opdFee,
       isFree: appointment.isFree,
       opdFeePaid: appointment.opdFeePaid,
+      invoiceId,
       patient: {
         id: patient._id,
         name: patient.name,
@@ -503,8 +621,17 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     timeSlot,
     reason,
     type,
+    appointmentType,
+    bookingType,
     captchaToken,
   } = req.body;
+
+  // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
+  // Drives the stored appointmentType and the slot capacity (2 regular / 3 emergency).
+  const urgency = bookingType || appointmentType || "regular";
+  if (!["regular", "emergency"].includes(urgency)) {
+    return ApiResponse.error(res, "bookingType must be 'regular' or 'emergency'", 400);
+  }
 
   /* =======================
      VERIFY reCAPTCHA
@@ -628,7 +755,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
      SLOT AVAILABILITY CHECK
   ======================== */
 
-  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot });
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
   if (slotError) {
     return ApiResponse.error(res, slotError.message, slotError.status);
   }
@@ -644,6 +771,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     timeSlot,
     reason,
     type: type || "regular",
+    appointmentType: urgency,
     opdFee: payment.amount,
     opdFeePaid: true,
     source: "online",

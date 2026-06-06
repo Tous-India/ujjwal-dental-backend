@@ -3,8 +3,16 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import MembershipPlan from "./membership.model.js";
 import Coupon from "./coupon.model.js";
 import Patient from "../patients/patient.model.js";
+import { generateInvoice } from "../billing/invoice.service.js";
 import { notify } from "../../utils/notifyHelper.js";
 import mongoose from "mongoose";
+
+// Map a membership paymentMethod to an invoice-allowed paymentMethod.
+const toInvoicePaymentMethod = (method) => {
+  if (["cash", "card", "upi", "online"].includes(method)) return method;
+  if (method === "bank_transfer") return "online";
+  return undefined;
+};
 
 /**
  * MEMBERSHIP CONTROLLER
@@ -439,6 +447,30 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
     }
   }
 
+  // Auto-invoice for the membership payment (marked paid). Skipped when no amount.
+  const membershipPaid = patient.membership.amountPaid;
+  if (membershipPaid && membershipPaid > 0) {
+    try {
+      await generateInvoice({
+        patient,
+        clinic: patient.preferredClinic || undefined,
+        items: [
+          {
+            itemType: "membership",
+            description: resolvedPlanName || "Membership",
+            unitPrice: membershipPaid,
+          },
+        ],
+        amountPaid: membershipPaid,
+        paymentMethod: toInvoicePaymentMethod(patient.membership.paymentMethod),
+        createdBy: req.user?._id,
+        applyMembershipDiscount: false, // the membership purchase itself isn't discounted
+      });
+    } catch (err) {
+      console.error("Auto-invoice for manual membership failed:", err.message);
+    }
+  }
+
   ApiResponse.success(
     res,
     {
@@ -753,6 +785,27 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
 
   // Generate coupons for purchased membership
   await Coupon.generateForMembership(patient, plan, startDate, expiryDate);
+
+  // Auto-invoice for the online membership purchase (paid). No existing invoice
+  // is created elsewhere in this flow, so there's nothing to duplicate.
+  try {
+    await generateInvoice({
+      patient,
+      clinic: patient.preferredClinic || undefined,
+      items: [
+        {
+          itemType: "membership",
+          description: plan.name,
+          unitPrice: plan.price,
+        },
+      ],
+      amountPaid: plan.price,
+      paymentMethod: "online",
+      applyMembershipDiscount: false,
+    });
+  } catch (err) {
+    console.error("Auto-invoice for membership purchase failed:", err.message);
+  }
 
   // Populate membership plan for response
   await patient.populate("membership.plan");

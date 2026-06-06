@@ -309,6 +309,65 @@ export const changePassword = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, "Password changed successfully");
 });
 
+/**
+ * @desc    Change password for a logged-in patient
+ * @route   POST /api/auth/patient/change-password
+ * @access  Private (Patient)
+ */
+export const patientChangePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return ApiResponse.error(
+      res,
+      "Please provide current and new password",
+      400,
+    );
+  }
+
+  // Fetch patient including the (normally hidden) password hash
+  const patient = await Patient.findById(req.patient._id).select("+password");
+
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  // OTP-only patients may have no password set yet — direct them to the
+  // reset flow rather than failing on a current-password mismatch.
+  if (!patient.password) {
+    return ApiResponse.error(
+      res,
+      "No password is set on your account. Use 'Forgot Password' on the login page to set one.",
+      400,
+    );
+  }
+
+  // Verify current password
+  const isMatch = await patient.comparePassword(currentPassword);
+  if (!isMatch) {
+    return ApiResponse.error(res, "Current password is incorrect", 401);
+  }
+
+  // Validate new password strength: min 10 chars, at least one letter and one number
+  if (
+    newPassword.length < 10 ||
+    !/[A-Za-z]/.test(newPassword) ||
+    !/[0-9]/.test(newPassword)
+  ) {
+    return ApiResponse.error(
+      res,
+      "New password must be at least 10 characters and include at least one letter and one number",
+      400,
+    );
+  }
+
+  // The pre-save hook hashes the password
+  patient.password = newPassword;
+  await patient.save();
+
+  ApiResponse.success(res, null, "Password updated successfully");
+});
+
 // ===========================================
 // PATIENT AUTHENTICATION (OTP BASED)
 // ===========================================

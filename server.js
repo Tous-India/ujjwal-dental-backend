@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import app from './app.js';
 import connectDB from './src/config/db.js';
+import { startFollowUpReminderScheduler } from './src/modules/followups/followup.scheduler.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -17,6 +18,9 @@ connectDB()
     const server = app.listen(PORT, () => {
       console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
     });
+
+    // Start the lightweight follow-up reminder scheduler (in-process, daily).
+    startFollowUpReminderScheduler();
 
     // Handle unhandled promise rejections
     process.on('unhandledRejection', (err) => {

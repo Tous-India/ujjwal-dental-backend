@@ -8,6 +8,9 @@ import clinicRoutes from "./modules/clinics/clinic.routes.js";
 import appointmentRoutes from "./modules/appointments/appointment.routes.js";
 import treatmentRoutes from "./modules/treatments/treatment.routes.js";
 import testRoutes from "./modules/tests/test.routes.js";
+import labRoutes from "./modules/labs/lab.routes.js";
+import labOrderRoutes from "./modules/labs/labOrder.routes.js";
+import followUpRoutes from "./modules/followups/followup.routes.js";
 import membershipRoutes from "./modules/memberships/membership.routes.js";
 import billingRoutes from "./modules/billing/billing.routes.js";
 import paymentRoutes from "./modules/payments/payment.routes.js";
@@ -113,6 +116,9 @@ router.use("/treatments", treatmentRoutes);
 // PATCH  /api/tests/:id                 - Update test
 // PATCH  /api/tests/:id/status          - Update status
 router.use("/tests", testRoutes);
+router.use("/labs", labRoutes);
+router.use("/lab-orders", labOrderRoutes);
+router.use("/followups", followUpRoutes);
 
 // ========== MEMBERSHIPS ==========
 // GET    /api/memberships/plans         - List membership plans
