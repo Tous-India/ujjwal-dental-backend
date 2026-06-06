@@ -90,6 +90,14 @@ const appointmentSchema = new mongoose.Schema(
       ref: "TreatmentMaster",
     },
 
+    // One-off custom treatment name (when the admin picked "Other" instead of a
+    // catalog treatment). Stored as a plain string on the appointment — no
+    // Treatment Master entry is created. Empty for normal/OPD visits.
+    treatmentName: {
+      type: String,
+      trim: true,
+    },
+
     // Fee for this visit (auto-filled from settings/treatment, admin-editable).
     fee: {
       type: Number,

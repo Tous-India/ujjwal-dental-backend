@@ -383,7 +383,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
   const {
     patientId, name, phone, clinic, date, timeSlot, reason, type,
     isFree, opdFee: requestOpdFee, opdFeePaid, source, notes,
-    visitType, treatmentId, fee, feeNotes, appointmentType, bookingType,
+    visitType, treatmentId, treatmentName, fee, feeNotes, appointmentType, bookingType,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -478,30 +478,54 @@ export const createAppointment = asyncHandler(async (req, res) => {
   let lineItemDescription;
   let treatmentDoc = null;
 
+  // "Other" = one-off custom treatment: store a name string + manual fee, no
+  // Treatment Master lookup. The frontend sends treatmentId === "other".
+  const isCustomTreatment = appointmentVisitType === "treatment" && treatmentId === "other";
+  const customTreatmentName = (treatmentName || "").trim();
+  if (isCustomTreatment && !customTreatmentName) {
+    return ApiResponse.error(res, "A treatment name is required for a custom treatment", 400);
+  }
+
   if (appointmentIsFree) {
     // Free appointment — no fee, no invoice, marked paid
     resolvedFee = 0;
     appointmentOpdFeePaid = true;
     lineItemType = appointmentVisitType === "treatment" ? "treatment" : "opd_fee";
-    lineItemDescription = appointmentVisitType === "treatment" ? "Treatment" : "OPD Consultation";
+    lineItemDescription =
+      appointmentVisitType === "treatment"
+        ? isCustomTreatment
+          ? customTreatmentName
+          : "Treatment"
+        : "OPD Consultation";
   } else if (appointmentVisitType === "treatment") {
-    // Treatment visit — fee from the treatment price, admin-editable override
-    if (!treatmentId || !mongoose.Types.ObjectId.isValid(treatmentId)) {
-      return ApiResponse.error(res, "A treatment is required for a treatment visit", 400);
+    if (isCustomTreatment) {
+      // Custom treatment — fee is entered manually (no preset price).
+      resolvedFee =
+        fee !== undefined && fee !== null && fee !== "" ? Number(fee) : 0;
+      if (!resolvedFee || resolvedFee <= 0) {
+        return ApiResponse.error(res, "A valid treatment fee is required", 400);
+      }
+      lineItemType = "treatment";
+      lineItemDescription = customTreatmentName;
+    } else {
+      // Treatment visit — fee from the treatment price, admin-editable override
+      if (!treatmentId || !mongoose.Types.ObjectId.isValid(treatmentId)) {
+        return ApiResponse.error(res, "A treatment is required for a treatment visit", 400);
+      }
+      treatmentDoc = await TreatmentMaster.findById(treatmentId);
+      if (!treatmentDoc) {
+        return ApiResponse.error(res, "Treatment not found", 404);
+      }
+      resolvedFee =
+        fee !== undefined && fee !== null && fee !== ""
+          ? Number(fee)
+          : Number(treatmentDoc.price) || 0;
+      if (!resolvedFee || resolvedFee <= 0) {
+        return ApiResponse.error(res, "A valid treatment fee is required", 400);
+      }
+      lineItemType = "treatment";
+      lineItemDescription = treatmentDoc.name;
     }
-    treatmentDoc = await TreatmentMaster.findById(treatmentId);
-    if (!treatmentDoc) {
-      return ApiResponse.error(res, "Treatment not found", 404);
-    }
-    resolvedFee =
-      fee !== undefined && fee !== null && fee !== ""
-        ? Number(fee)
-        : Number(treatmentDoc.price) || 0;
-    if (!resolvedFee || resolvedFee <= 0) {
-      return ApiResponse.error(res, "A valid treatment fee is required", 400);
-    }
-    lineItemType = "treatment";
-    lineItemDescription = treatmentDoc.name;
   } else {
     // OPD / consultation — fee from admin override or settings (regular/emergency)
     if (requestOpdFee !== undefined && requestOpdFee !== null && requestOpdFee !== "") {
@@ -530,7 +554,13 @@ export const createAppointment = asyncHandler(async (req, res) => {
     type,
     appointmentType: isEmergency ? "emergency" : "regular",
     visitType: appointmentVisitType,
-    ...(appointmentVisitType === "treatment" ? { treatmentId } : {}),
+    // Normal treatment → store the catalog ref; custom "Other" → store the name
+    // string only (never cast the "other" sentinel into the ObjectId field).
+    ...(appointmentVisitType === "treatment"
+      ? isCustomTreatment
+        ? { treatmentName: customTreatmentName }
+        : { treatmentId }
+      : {}),
     fee: resolvedFee,
     feeNotes: feeNotes || undefined,
     // opdFee kept in sync for backward-compatibility with existing views
