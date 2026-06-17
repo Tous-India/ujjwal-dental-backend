@@ -36,6 +36,7 @@ export const getAllPlans = asyncHandler(async (req, res) => {
   const filter = {};
   if (active === "true") {
     filter.isActive = true;
+    filter.discontinued = { $ne: true }; // also hide discontinued from public
   }
   if (type) {
     filter.type = type;
@@ -170,6 +171,7 @@ export const updatePlan = asyncHandler(async (req, res) => {
     "features",
     "displayOrder",
     "isActive",
+    "discontinued",
     "couponConfig",
   ];
 
@@ -678,6 +680,36 @@ export const getActiveMembers = asyncHandler(async (req, res) => {
     total,
     totalPages: Math.ceil(total / parseInt(limit)),
   });
+});
+
+/**
+ * @desc    Get patient's current membership with full plan details
+ * @route   GET /api/memberships/my-plan
+ * @access  Patient (authenticated via patientProtect)
+ */
+export const getMyPlan = asyncHandler(async (req, res) => {
+  const patientId = req.patient?._id;
+  if (!patientId) return ApiResponse.error(res, "Unauthorized", 401);
+
+  // Populate the plan reference so price, duration, features and benefits are available
+  const patient = await Patient.findById(patientId).populate("membership.plan");
+  if (!patient || !patient.membership) {
+    return ApiResponse.success(res, { hasMembership: false, currentMembership: null }, "No membership found");
+  }
+
+  let currentMembership = patient.membership.toObject();
+
+  // Fallback: if plan ref is null (manually-assigned with no planId), look up by name
+  if (!currentMembership.plan && currentMembership.planName) {
+    const planByName = await MembershipPlan.findOne({ name: currentMembership.planName }).lean();
+    if (planByName) currentMembership.plan = planByName;
+  }
+
+  ApiResponse.success(
+    res,
+    { hasMembership: patient.hasMembership, currentMembership },
+    "Membership fetched successfully"
+  );
 });
 
 /**

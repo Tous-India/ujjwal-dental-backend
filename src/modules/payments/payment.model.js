@@ -71,7 +71,7 @@ const paymentSchema = new mongoose.Schema(
     // Payment status
     status: {
       type: String,
-      enum: ["pending", "paid", "failed", "refunded", "cancelled"],
+      enum: ["pending", "paid", "failed", "refunded", "cancelled", "reversed"],
       default: "pending",
     },
 
@@ -135,6 +135,32 @@ const paymentSchema = new mongoose.Schema(
 
     // General notes
     notes: String,
+
+    // ── Admin-recorded payment settlement ──────────────────────────────
+    // Stores which invoices were settled and by how much, enabling exact reversal.
+    settledInvoices: [
+      {
+        invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice" },
+        invoiceNumber: String,
+        appliedAmount: Number,
+        previousAmountPaid: Number,
+      },
+    ],
+
+    // Admin user who recorded this payment (for manual cash/UPI/card payments)
+    recordedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    // Reversal fields
+    reversed: { type: Boolean, default: false },
+    reversalReason: String,
+    reversedAt: Date,
+    reversedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
   },
   {
     timestamps: true,

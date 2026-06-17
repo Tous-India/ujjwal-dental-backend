@@ -40,3 +40,7 @@ const seedAdmin = async () => {
 };
 
 seedAdmin();
+
+
+// mail: ujjwaldental832@gmail.com
+// Password: Easylogin@1

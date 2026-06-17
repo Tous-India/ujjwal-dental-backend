@@ -39,6 +39,9 @@ router.post("/plans/seed", authProtect, membershipController.seedDefaultPlans);
 
 // ==================== PATIENT MEMBERSHIPS ====================
 
+// Get own membership with full plan details (Patient)
+router.get("/my-plan", patientProtect, membershipController.getMyPlan);
+
 // Purchase membership (Patient - after payment)
 router.post("/purchase", optionalAuth, membershipController.purchaseMembership);
 

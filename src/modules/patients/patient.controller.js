@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Patient from "./patient.model.js";
+import MembershipPlan from "../memberships/membership.model.js";
 import Appointment from "../appointments/appointment.model.js";
 import { Treatment } from "../treatments/treatment.model.js";
 import Payment from "../payments/payment.model.js";
@@ -637,17 +638,28 @@ export const getPatientInvoices = asyncHandler(async (req, res) => {
 export const getPatientMembership = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  // Find patient
-  const patient = await Patient.findById(id);
+  // Populate the plan ref inside the embedded membership sub-document
+  const patient = await Patient.findById(id).populate("membership.plan");
 
   if (!patient) {
     return ApiResponse.error(res, "Patient not found", 404);
   }
 
+  // Build the membership object for the response.
+  // If membership.plan is still null after populate (custom/manual assignment with no planId),
+  // fall back to a name-based lookup so price, duration, features, and benefits are available.
+  let currentMembership = patient.membership ? patient.membership.toObject() : null;
+  if (currentMembership && !currentMembership.plan && currentMembership.planName) {
+    const planByName = await MembershipPlan.findOne({ name: currentMembership.planName }).lean();
+    if (planByName) {
+      currentMembership.plan = planByName;
+    }
+  }
+
   ApiResponse.success(
     res,
     {
-      currentMembership: patient.membership || null,
+      currentMembership,
       membershipHistory: patient.membershipHistory || [],
       hasMembership: patient.hasMembership,
       currentDiscount: patient.currentDiscount,

@@ -992,3 +992,408 @@ export const deletePayment = asyncHandler(async (req, res) => {
 
   ApiResponse.success(res, null, "Payment deleted permanently");
 });
+
+// ==================== ADMIN MANUAL PAYMENT + REVERSAL ====================
+
+/**
+ * @desc    Record a manual cash/UPI/card payment and auto-settle oldest invoices
+ * @route   POST /api/payments/admin/record-payment
+ * @access  Admin
+ */
+export const recordAdminPayment = asyncHandler(async (req, res) => {
+  const { patientId, amount, mode, reference } = req.body;
+  const adminId = req.user._id;
+
+  // Validate inputs
+  if (!patientId || !mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "Valid patientId is required", 400);
+  }
+  const numAmount = Number(amount);
+  if (!numAmount || numAmount <= 0) {
+    return ApiResponse.error(res, "Amount must be greater than 0", 400);
+  }
+  const validModes = ["cash", "card", "upi"];
+  const normalizedMode = (mode || "").toLowerCase();
+  if (!validModes.includes(normalizedMode)) {
+    return ApiResponse.error(res, "Mode must be cash, card, or upi", 400);
+  }
+
+  const patient = await Patient.findById(patientId);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  // Fetch pending invoices sorted oldest first
+  const invoices = await Invoice.find({
+    patient: patientId,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+  }).sort({ createdAt: 1 });
+
+  const totalPending = invoices.reduce(
+    (sum, inv) => sum + (inv.balanceDue || 0),
+    0
+  );
+
+  if (totalPending <= 0) {
+    return ApiResponse.error(res, "No pending invoices for this patient", 400);
+  }
+  if (numAmount > totalPending + 0.01) {
+    return ApiResponse.error(
+      res,
+      `Amount ₹${numAmount} exceeds total pending ₹${totalPending.toFixed(2)}`,
+      400
+    );
+  }
+
+  // Settle invoices oldest first
+  let remaining = numAmount;
+  const settledInvoices = [];
+
+  for (const invoice of invoices) {
+    if (remaining <= 0) break;
+    const balanceDue =
+      invoice.balanceDue ??
+      Math.max(0, invoice.grandTotal - (invoice.amountPaid || 0));
+    const applyAmount = Math.min(remaining, balanceDue);
+    if (applyAmount <= 0) continue;
+
+    const previousAmountPaid = invoice.amountPaid || 0;
+    invoice.amountPaid = previousAmountPaid + applyAmount;
+    invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
+
+    if (invoice.amountPaid >= invoice.grandTotal) {
+      invoice.paymentStatus = "paid";
+      invoice.status = "paid";
+    } else {
+      invoice.paymentStatus = "partial";
+      invoice.status = "partially_paid";
+    }
+
+    await invoice.save();
+
+    settledInvoices.push({
+      invoiceId: invoice._id,
+      invoiceNumber: invoice.invoiceNumber,
+      appliedAmount: applyAmount,
+      previousAmountPaid,
+    });
+
+    remaining -= applyAmount;
+  }
+
+  // Create payment record (no .invoice link so post-save hook doesn't double-settle)
+  const payment = new Payment({
+    patient: patientId,
+    amount: numAmount,
+    paymentMode: normalizedMode,
+    type: "invoice_payment",
+    status: "paid",
+    paidAt: new Date(),
+    referenceNumber: reference || undefined,
+    recordedBy: adminId,
+    settledInvoices,
+    reversed: false,
+  });
+  await payment.save();
+
+  return ApiResponse.success(
+    res,
+    { payment, settledInvoices },
+    "Payment recorded successfully"
+  );
+});
+
+/**
+ * @desc    Reverse an admin-recorded payment and restore invoice balances
+ * @route   POST /api/payments/admin/reverse-payment
+ * @access  Admin
+ */
+export const reverseAdminPayment = asyncHandler(async (req, res) => {
+  const { paymentId, reason } = req.body;
+  const adminId = req.user._id;
+
+  if (!paymentId || !mongoose.Types.ObjectId.isValid(paymentId)) {
+    return ApiResponse.error(res, "Valid paymentId is required", 400);
+  }
+  if (!reason?.trim()) {
+    return ApiResponse.error(res, "Reversal reason is required", 400);
+  }
+
+  const payment = await Payment.findById(paymentId);
+  if (!payment) {
+    return ApiResponse.error(res, "Payment not found", 404);
+  }
+  if (payment.reversed) {
+    return ApiResponse.error(res, "Payment already reversed", 400);
+  }
+  if (!payment.settledInvoices?.length) {
+    return ApiResponse.error(
+      res,
+      "This payment has no settlement history — only admin-recorded payments can be reversed here",
+      400
+    );
+  }
+
+  // Restore each invoice to its exact pre-payment state
+  for (const settled of payment.settledInvoices) {
+    const invoice = await Invoice.findById(settled.invoiceId);
+    if (!invoice) continue;
+
+    invoice.amountPaid = settled.previousAmountPaid || 0;
+    invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
+
+    if (invoice.amountPaid <= 0) {
+      invoice.paymentStatus = "unpaid";
+      if (["paid", "partially_paid"].includes(invoice.status)) {
+        invoice.status = "sent";
+      }
+    } else if (invoice.amountPaid < invoice.grandTotal) {
+      invoice.paymentStatus = "partial";
+      invoice.status = "partially_paid";
+    }
+
+    await invoice.save();
+  }
+
+  payment.reversed = true;
+  payment.reversalReason = reason.trim();
+  payment.reversedAt = new Date();
+  payment.reversedBy = adminId;
+  payment.status = "reversed";
+  await payment.save();
+
+  return ApiResponse.success(res, { success: true }, "Payment reversed successfully");
+});
+
+/**
+ * @desc    Collect payment for a specific invoice (admin — per-invoice, not oldest-first)
+ * @route   POST /api/payments/admin/collect
+ * @access  Admin
+ */
+export const collectPayment = asyncHandler(async (req, res) => {
+  const { invoiceId, amount, mode, reference, notes } = req.body;
+  const adminId = req.user._id;
+
+  if (!invoiceId || !mongoose.Types.ObjectId.isValid(invoiceId)) {
+    return ApiResponse.error(res, "Valid invoiceId is required", 400);
+  }
+
+  const numAmount = Number(amount);
+  if (!numAmount || numAmount <= 0) {
+    return ApiResponse.error(res, "Amount must be greater than 0", 400);
+  }
+
+  const validModes = ["cash", "card", "upi"];
+  const normalizedMode = (mode || "").toLowerCase();
+  if (!validModes.includes(normalizedMode)) {
+    return ApiResponse.error(res, "Mode must be cash, card, or upi", 400);
+  }
+
+  const invoice = await Invoice.findById(invoiceId);
+  if (!invoice) {
+    return ApiResponse.error(res, "Invoice not found", 404);
+  }
+
+  if (invoice.status === "cancelled") {
+    return ApiResponse.error(res, "Cannot collect payment on a cancelled invoice", 400);
+  }
+
+  if (invoice.paymentStatus === "paid") {
+    return ApiResponse.error(res, "Invoice is already fully paid", 400);
+  }
+
+  const balanceDue = Math.max(0, (invoice.grandTotal || 0) - (invoice.amountPaid || 0));
+
+  if (numAmount > balanceDue + 0.01) {
+    return ApiResponse.error(
+      res,
+      `Amount ₹${numAmount} exceeds balance due ₹${balanceDue.toFixed(2)}`,
+      400
+    );
+  }
+
+  const previousAmountPaid = invoice.amountPaid || 0;
+  invoice.amountPaid = previousAmountPaid + numAmount;
+  invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
+
+  if (invoice.amountPaid >= invoice.grandTotal) {
+    invoice.paymentStatus = "paid";
+    invoice.status = "paid";
+  } else {
+    invoice.paymentStatus = "partial";
+    invoice.status = "partially_paid";
+  }
+
+  await invoice.save();
+
+  const payment = new Payment({
+    patient: invoice.patient,
+    amount: numAmount,
+    paymentMode: normalizedMode,
+    type: "invoice_payment",
+    status: "paid",
+    paidAt: new Date(),
+    referenceNumber: reference || undefined,
+    notes: notes || undefined,
+    recordedBy: adminId,
+    settledInvoices: [
+      {
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        appliedAmount: numAmount,
+        previousAmountPaid,
+      },
+    ],
+    reversed: false,
+  });
+
+  await payment.save();
+
+  return ApiResponse.success(
+    res,
+    { payment, updatedInvoice: invoice },
+    "Payment collected successfully"
+  );
+});
+
+// ==================== PATIENT PENDING PAYMENT (RAZORPAY) ====================
+
+/**
+ * @desc    Create a Razorpay order for patient's pending invoice balance
+ * @route   POST /api/payments/patient/create-pending-order
+ * @access  Patient
+ */
+export const createPendingOrder = asyncHandler(async (req, res) => {
+  const patientId = req.patient._id;
+  const amount = Number(req.body.amount);
+
+  if (!amount || isNaN(amount) || amount <= 0) {
+    return ApiResponse.error(res, "Amount must be greater than 0", 400);
+  }
+
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    return ApiResponse.error(res, "Razorpay is not configured", 500);
+  }
+
+  // Sum of all outstanding balances across unpaid/partially-paid invoices
+  const pendingInvoices = await Invoice.find({
+    patient: patientId,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+  });
+
+  const totalPending = pendingInvoices.reduce(
+    (sum, inv) => sum + (inv.balanceDue || 0),
+    0
+  );
+
+  if (totalPending <= 0) {
+    return ApiResponse.error(res, "No pending amount to pay", 400);
+  }
+
+  if (amount > totalPending + 0.01) {
+    return ApiResponse.error(
+      res,
+      `Amount cannot exceed total pending ₹${totalPending.toFixed(2)}`,
+      400
+    );
+  }
+
+  const Razorpay = (await import("razorpay")).default;
+  const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+
+  let order;
+  try {
+    order = await razorpay.orders.create({
+      amount: Math.round(amount * 100),
+      currency: "INR",
+      receipt: `pending_${patientId.toString().slice(-8)}_${Date.now()}`,
+      notes: { patientId: patientId.toString(), type: "pending_payment" },
+    });
+  } catch (err) {
+    console.error("[PendingOrder] Razorpay order creation failed:", err.message);
+    return ApiResponse.error(res, "Failed to create payment order", 502);
+  }
+
+  return ApiResponse.success(
+    res,
+    { orderId: order.id, amount, currency: "INR", keyId: process.env.RAZORPAY_KEY_ID },
+    "Order created successfully"
+  );
+});
+
+/**
+ * @desc    Verify Razorpay payment and settle against oldest unpaid invoices
+ * @route   POST /api/payments/patient/verify-pending-payment
+ * @access  Patient
+ */
+export const verifyPendingPayment = asyncHandler(async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount } = req.body;
+  const patientId = req.patient._id;
+
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return ApiResponse.error(res, "Missing Razorpay payment details", 400);
+  }
+
+  if (!process.env.RAZORPAY_KEY_SECRET) {
+    return ApiResponse.error(res, "Payment verification not configured on server", 500);
+  }
+
+  // Verify Razorpay signature
+  const expectedSignature = crypto
+    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest("hex");
+
+  if (expectedSignature !== razorpay_signature) {
+    return ApiResponse.error(res, "Invalid payment signature", 400);
+  }
+
+  // Fetch outstanding invoices, oldest first
+  const invoices = await Invoice.find({
+    patient: patientId,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+  }).sort({ invoiceDate: 1, createdAt: 1 });
+
+  // Distribute the paid amount across invoices starting with the oldest
+  let remaining = Number(amount);
+  for (const invoice of invoices) {
+    if (remaining <= 0) break;
+    const balanceDue = invoice.balanceDue || Math.max(0, invoice.grandTotal - (invoice.amountPaid || 0));
+    const applyAmount = Math.min(remaining, balanceDue);
+    if (applyAmount <= 0) continue;
+
+    invoice.amountPaid = (invoice.amountPaid || 0) + applyAmount;
+    invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
+
+    if (invoice.amountPaid >= invoice.grandTotal) {
+      invoice.paymentStatus = "paid";
+      invoice.status = "paid";
+    } else {
+      invoice.paymentStatus = "partial";
+      invoice.status = "partially_paid";
+    }
+
+    await invoice.save();
+    remaining -= applyAmount;
+  }
+
+  // Create a consolidated payment record
+  const payment = new Payment({
+    patient: patientId,
+    amount: Number(amount),
+    paymentMode: "razorpay",
+    type: "invoice_payment",
+    status: "paid",
+    paidAt: new Date(),
+    razorpayOrderId: razorpay_order_id,
+    razorpayPaymentId: razorpay_payment_id,
+    razorpaySignature: razorpay_signature,
+    notes: "Pending amount payment via Razorpay",
+  });
+  await payment.save();
+
+  return ApiResponse.success(res, { success: true }, "Payment successful");
+});

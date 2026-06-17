@@ -539,6 +539,37 @@ export const getPatientPendingInvoices = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get total pending amount for a patient (computed from grandTotal - amountPaid)
+ * @route   GET /api/billing/patient/:patientId/pending-amount
+ * @access  Admin
+ */
+export const getPatientPendingAmount = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
+  const invoices = await Invoice.find({
+    patient: patientId,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+    status: { $ne: "cancelled" },
+  }).select("grandTotal amountPaid invoiceNumber");
+
+  const pendingAmount = invoices.reduce((sum, inv) => {
+    // Always compute from grandTotal - amountPaid so stale balanceDue never causes issues
+    return sum + Math.max(0, (inv.grandTotal || 0) - (inv.amountPaid || 0));
+  }, 0);
+
+  // Return flat — no ApiResponse wrapper so frontend reads res.data.pendingAmount directly
+  res.json({
+    success: true,
+    pendingAmount: Math.round(pendingAmount * 100) / 100,
+    invoiceCount: invoices.length,
+  });
+});
+
+/**
  * @desc    Get overdue invoices
  * @route   GET /api/billing/invoices/overdue
  * @access  Admin
@@ -861,4 +892,75 @@ export const deleteInvoice = asyncHandler(async (req, res) => {
   await Invoice.findByIdAndDelete(id);
 
   ApiResponse.success(res, null, "Invoice deleted permanently");
+});
+
+/**
+ * @desc    Get unpaid/partially-paid invoices for a patient (for collect-payment flow)
+ * @route   GET /api/billing/patient/:patientId/unpaid-invoices
+ * @access  Admin
+ */
+export const getPatientUnpaidInvoices = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
+  const patient = await Patient.findById(patientId).select("name phone email");
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  const rawInvoices = await Invoice.find({
+    patient: patientId,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+    status: { $ne: "cancelled" },
+  })
+    .sort({ createdAt: 1 })
+    .select("invoiceNumber invoiceDate dueDate grandTotal amountPaid paymentStatus status items");
+
+  const invoices = rawInvoices.map((inv) => {
+    const balanceDue = Math.max(0, (inv.grandTotal || 0) - (inv.amountPaid || 0));
+
+    // Derive category from first item type
+    let category = "Other";
+    if (inv.items && inv.items.length > 0) {
+      const types = inv.items.map((item) => item.itemType);
+      if (types.some((t) => ["treatment", "surgery"].includes(t))) {
+        category = "Treatment";
+      } else if (types.includes("membership")) {
+        category = "Membership";
+      } else if (types.includes("opd_fee")) {
+        category = "OPD Fee";
+      } else if (types.includes("test")) {
+        category = "Test";
+      } else if (types.includes("medicine")) {
+        category = "Medicine";
+      }
+    }
+
+    return {
+      _id: inv._id,
+      invoiceNumber: inv.invoiceNumber,
+      date: inv.invoiceDate,
+      dueDate: inv.dueDate,
+      totalAmount: inv.grandTotal || 0,
+      amountPaid: inv.amountPaid || 0,
+      balanceDue,
+      paymentStatus: inv.paymentStatus,
+      status: inv.status,
+      category,
+    };
+  });
+
+  const totalPending = Math.round(
+    invoices.reduce((sum, inv) => sum + inv.balanceDue, 0) * 100
+  ) / 100;
+
+  res.json({
+    success: true,
+    patient: { name: patient.name, phone: patient.phone, email: patient.email },
+    totalPending,
+    invoices,
+  });
 });
