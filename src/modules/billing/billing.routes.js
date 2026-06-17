@@ -76,4 +76,10 @@ router.get("/invoices/:id/pdf", anyAuth, billingController.downloadInvoicePdf);
 // Get patient's pending invoices
 router.get("/patient/:patientId/pending", authProtect, billingController.getPatientPendingInvoices);
 
+// Get patient's total pending amount (computed fresh from grandTotal - amountPaid)
+router.get("/patient/:patientId/pending-amount", authProtect, billingController.getPatientPendingAmount);
+
+// Get patient's unpaid/partial invoices with fresh balanceDue (for collect-payment flow)
+router.get("/patient/:patientId/unpaid-invoices", authProtect, billingController.getPatientUnpaidInvoices);
+
 export default router;

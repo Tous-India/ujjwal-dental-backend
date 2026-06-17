@@ -72,4 +72,21 @@ router.post("/:id/refund", authProtect, paymentController.processRefund);
 // Get patient's payment summary
 router.get("/patient/:patientId/summary", authProtect, paymentController.getPatientPaymentSummary);
 
+// ==================== ADMIN MANUAL PAYMENT ====================
+
+// Record cash/UPI/card payment and auto-settle oldest invoices — Admin
+router.post("/admin/record-payment", authProtect, paymentController.recordAdminPayment);
+
+// Collect payment for a specific invoice — Admin
+router.post("/admin/collect", authProtect, paymentController.collectPayment);
+
+// Reverse an admin-recorded payment — Admin
+router.post("/admin/reverse-payment", authProtect, paymentController.reverseAdminPayment);
+
+// Create Razorpay order for pending invoice balance — Patient
+router.post("/patient/create-pending-order", patientProtect, paymentController.createPendingOrder);
+
+// Verify Razorpay payment and settle against oldest invoices — Patient
+router.post("/patient/verify-pending-payment", patientProtect, paymentController.verifyPendingPayment);
+
 export default router;

@@ -126,6 +126,14 @@ const membershipPlanSchema = new mongoose.Schema(
       default: true,
     },
 
+    // Permanently retired — plan is hidden from public and shown with "Discontinued" badge
+    // on patient pages. Unlike isActive, discontinued plans are never meant to be reactivated
+    // (though admins can still override).
+    discontinued: {
+      type: Boolean,
+      default: false,
+    },
+
     // Display order for UI
     displayOrder: {
       type: Number,
