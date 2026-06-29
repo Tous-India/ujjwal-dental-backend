@@ -194,6 +194,20 @@ const appointmentSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Payment method recorded for this appointment.
+    paymentMethod: {
+      type: String,
+      enum: ["cash", "online", "free"],
+      default: "cash",
+    },
+
+    // Payment status (kept in sync with the linked invoice via PATCH handler).
+    paymentStatus: {
+      type: String,
+      enum: ["paid", "unpaid", "free"],
+      default: "unpaid",
+    },
+
     // Created by (staff who booked)
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

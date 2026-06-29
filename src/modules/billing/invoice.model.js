@@ -201,7 +201,7 @@ const invoiceSchema = new mongoose.Schema(
     // Optional — older invoices simply won't have it.
     paymentMethod: {
       type: String,
-      enum: ["cash", "card", "upi", "online", "razorpay", "pay-at-clinic"],
+      enum: ["cash", "card", "upi", "online", "razorpay", "pay-at-clinic", "free"],
     },
 
     // Notes
