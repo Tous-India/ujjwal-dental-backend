@@ -23,9 +23,9 @@ const seedAdmin = async () => {
 
     const admin = await User.create({
       name: "Admin",
-      email: "admin@ujjwaldental.com",
+      email: "ujjwaldentalplanet.in@gmail.com",
       phone: "9999999999",
-      password: "Admin@123",
+      password: "Easylogin@1",
       role: "admin",
     });
 
@@ -42,5 +42,6 @@ const seedAdmin = async () => {
 seedAdmin();
 
 
-// mail: ujjwaldental832@gmail.com
+// mail: ujjwaldentalplanet.in@gmail.com
 // Password: Easylogin@1
+ 

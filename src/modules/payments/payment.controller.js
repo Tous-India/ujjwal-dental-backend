@@ -511,7 +511,7 @@ export const createRazorpayOrder = asyncHandler(async (req, res) => {
     }
   }
 
-  const payment = await Payment.create(paymentData);
+  const payment = await Payment.createSafe(paymentData);
 
   ApiResponse.success(
     res,

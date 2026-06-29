@@ -66,21 +66,4 @@ router.get("/members", authProtect, membershipController.getActiveMembers);
 // Get membership statistics (Admin)
 router.get("/stats", authProtect, membershipController.getMembershipStats);
 
-// ==================== COUPON MANAGEMENT ====================
-
-// Admin: get all coupons across all patients
-router.get("/coupons/all", authProtect, membershipController.getAllCoupons);
-
-// Patient: get own coupons
-router.get("/coupons/my", patientProtect, membershipController.getMyCoupons);
-
-// Admin: get coupons for a patient
-router.get("/coupons/patient/:patientId", authProtect, membershipController.getPatientCoupons);
-
-// Admin: verify and redeem a coupon by code
-router.post("/coupons/verify", authProtect, membershipController.verifyCoupon);
-
-// Admin: undo a used coupon
-router.patch("/coupons/:couponId/unuse", authProtect, membershipController.undoCouponUsed);
-
 export default router;

@@ -7,6 +7,7 @@ import Payment from "../payments/payment.model.js";
 import SystemSettings from "../settings/settings.model.js";
 import { TreatmentMaster } from "../treatments/treatment.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
+import Invoice from "../billing/invoice.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 
@@ -384,6 +385,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     patientId, name, phone, clinic, date, timeSlot, reason, type,
     isFree, opdFee: requestOpdFee, opdFeePaid, source, notes,
     visitType, treatmentId, treatmentName, fee, feeNotes, appointmentType, bookingType,
+    paymentMethod: incomingPaymentMethod,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -567,6 +569,8 @@ export const createAppointment = asyncHandler(async (req, res) => {
     opdFee: resolvedFee,
     isFree: appointmentIsFree,
     opdFeePaid: appointmentOpdFeePaid,
+    paymentMethod: appointmentIsFree ? "free" : (incomingPaymentMethod === "online" ? "online" : "cash"),
+    paymentStatus: incomingPaymentMethod === "free" ? "free" : "unpaid",
     source: source || "walk_in",
     notes,
     createdBy: req.user?._id,
@@ -804,6 +808,8 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     appointmentType: urgency,
     opdFee: payment.amount,
     opdFeePaid: true,
+    paymentMethod: "online",
+    paymentStatus: "paid",
     source: "online",
   });
 
@@ -893,6 +899,12 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     date,
     timeSlot,
     type,
+    appointmentType,
+    visitType,
+    treatmentId,
+    treatmentName,
+    fee,
+    isFree,
     status,
     reason,
     notes,
@@ -902,6 +914,8 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     checkInTime,
     startTime,
     endTime,
+    paymentMethod,
+    paymentStatus,
   } = req.body;
 
   /* =======================
@@ -914,11 +928,13 @@ export const updateAppointment = asyncHandler(async (req, res) => {
 
     const startOfDay = new Date(newDate);
     startOfDay.setHours(0, 0, 0, 0);
-
     const endOfDay = new Date(newDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const conflict = await Appointment.findOne({
+    // Use incoming urgency (or existing) to determine the effective capacity
+    const urgency = appointmentType || appointment.appointmentType || "regular";
+    const capacity = slotCapacityFor(urgency);
+    const slotCount = await Appointment.countDocuments({
       _id: { $ne: appointment._id },
       clinic: appointment.clinic,
       date: { $gte: startOfDay, $lte: endOfDay },
@@ -926,8 +942,8 @@ export const updateAppointment = asyncHandler(async (req, res) => {
       status: { $ne: "cancelled" },
     });
 
-    if (conflict) {
-      return ApiResponse.error(res, "Time slot already booked", 409);
+    if (slotCount >= capacity) {
+      return ApiResponse.error(res, "This time slot is fully booked", 409);
     }
 
     appointment.date = newDate;
@@ -944,13 +960,90 @@ export const updateAppointment = asyncHandler(async (req, res) => {
   if (status !== undefined) appointment.status = status;
   if (reason !== undefined) appointment.reason = reason;
   if (notes !== undefined) appointment.notes = notes;
-  if (opdFee !== undefined) appointment.opdFee = opdFee;
   if (opdFeePaid !== undefined) appointment.opdFeePaid = opdFeePaid;
   if (source !== undefined) appointment.source = source;
 
   if (checkInTime !== undefined) appointment.checkInTime = checkInTime;
   if (startTime !== undefined) appointment.startTime = startTime;
   if (endTime !== undefined) appointment.endTime = endTime;
+
+  if (appointmentType !== undefined) appointment.appointmentType = appointmentType;
+  if (visitType !== undefined) {
+    appointment.visitType = visitType;
+    if (visitType === "opd") {
+      appointment.treatmentId = null;
+      appointment.treatmentName = "";
+    }
+  }
+  if (fee !== undefined) {
+    appointment.fee = Number(fee);
+    appointment.opdFee = Number(fee);
+  }
+  if (opdFee !== undefined) {
+    appointment.opdFee = Number(opdFee);
+    appointment.fee = Number(opdFee);
+  }
+  if (treatmentId !== undefined) appointment.treatmentId = treatmentId || null;
+  if (treatmentName !== undefined) appointment.treatmentName = treatmentName || "";
+  if (isFree !== undefined) {
+    appointment.isFree = isFree;
+    // Auto-derive paymentStatus unless an explicit override arrives later in body
+    if (!paymentStatus) {
+      if (isFree) {
+        appointment.paymentStatus = "free";
+        appointment.opdFeePaid = true;
+      } else if (appointment.paymentStatus === "free") {
+        appointment.paymentStatus = "unpaid";
+        appointment.opdFeePaid = false;
+      }
+    }
+  }
+
+  if (paymentMethod !== undefined) appointment.paymentMethod = paymentMethod;
+  if (paymentStatus !== undefined) appointment.paymentStatus = paymentStatus;
+
+  /* =======================
+     SYNC LINKED INVOICE
+     — fee change: update item unitPrice → recalculate grandTotal
+     — payment change: set amountPaid based on new paymentStatus
+     Both are handled in a single invoice load to avoid double saves.
+  ======================== */
+  const invoiceNeedsSync =
+    fee !== undefined || opdFee !== undefined ||
+    paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined;
+
+  if (invoiceNeedsSync && appointment.invoice) {
+    const invoice = await Invoice.findById(appointment.invoice);
+    if (invoice) {
+      let invoiceDirty = false;
+
+      // Update invoice line-item price when fee changes
+      if ((fee !== undefined || opdFee !== undefined) && invoice.items?.length > 0) {
+        const effectiveFee = fee !== undefined ? Number(fee) : Number(opdFee);
+        invoice.items[0].unitPrice = appointment.isFree ? 0 : effectiveFee;
+        invoice.calculateTotals(); // recalculate grandTotal in memory before setting amountPaid
+        invoiceDirty = true;
+      }
+
+      // Sync amountPaid to the (possibly recalculated) grandTotal
+      if (paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined) {
+        const newPS = appointment.paymentStatus;
+        if (newPS === "free") {
+          invoice.amountPaid = invoice.grandTotal;
+          invoice.paymentMethod = "free";
+        } else if (newPS === "paid") {
+          invoice.amountPaid = invoice.grandTotal;
+        } else {
+          invoice.amountPaid = 0;
+        }
+        invoiceDirty = true;
+      }
+
+      if (invoiceDirty) {
+        await invoice.save(); // pre-save hook re-runs calculateTotals and sets paymentStatus
+      }
+    }
+  }
 
   /* =======================
      SAVE
@@ -1325,6 +1418,10 @@ export const deleteAppointment = asyncHandler(async (req, res) => {
 
   if (!appointment) {
     return ApiResponse.error(res, "Appointment not found", 404);
+  }
+
+  if (appointment.status !== "cancelled") {
+    return ApiResponse.error(res, "Please cancel the appointment before deleting", 400);
   }
 
   await Appointment.findByIdAndDelete(id);

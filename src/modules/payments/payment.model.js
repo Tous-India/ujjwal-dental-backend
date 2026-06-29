@@ -177,26 +177,22 @@ paymentSchema.index({ razorpayOrderId: 1 });
 
 // ============ PRE-SAVE MIDDLEWARE ============
 
+// Generates a random paymentNumber — avoids the race condition of count-based serials.
+const generatePaymentNumber = () => {
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2, "0");
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `PAY-${dd}${mm}-${rand}`;
+};
+
 /**
- * Generate payment number (Mongoose 6.x+ async middleware - no next() needed)
+ * Generate payment number (Mongoose 6.x+ async middleware - no next() needed).
+ * Uses a random 4-digit suffix to avoid duplicate key collisions under concurrent saves.
  */
-paymentSchema.pre("save", async function () {
-  // Generate payment number for new documents
+paymentSchema.pre("save", function () {
   if (this.isNew && !this.paymentNumber) {
-    const date = new Date();
-    const year = date.getFullYear().toString().slice(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
-
-    // Count payments this month
-    const count = await mongoose.model("Payment").countDocuments({
-      createdAt: {
-        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-      },
-    });
-
-    const serial = (count + 1).toString().padStart(4, "0");
-    this.paymentNumber = `PAY-${year}${month}-${serial}`;
+    this.paymentNumber = generatePaymentNumber();
   }
 });
 
@@ -341,6 +337,28 @@ paymentSchema.statics.getDailyCollection = async function (clinicId, date) {
   });
 
   return collection;
+};
+
+/**
+ * Create a payment record with retry on duplicate paymentNumber (E11000).
+ * Generates a fresh random paymentNumber on each attempt.
+ * Use this instead of Payment.create() at high-concurrency call sites.
+ */
+paymentSchema.statics.createSafe = async function (data, maxAttempts = 5) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await this.create({ ...data, paymentNumber: generatePaymentNumber() });
+    } catch (err) {
+      if (err.code === 11000 && err.keyPattern?.paymentNumber) {
+        console.warn(`[Payment] Duplicate paymentNumber, retrying... (attempt ${attempt}/${maxAttempts})`);
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 };
 
 // Create and export the model

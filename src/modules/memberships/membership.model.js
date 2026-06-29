@@ -140,14 +140,6 @@ const membershipPlanSchema = new mongoose.Schema(
       default: 0,
     },
 
-    // Coupon/Card configuration
-    couponConfig: {
-      enabled: { type: Boolean, default: true },
-      numberOfCoupons: { type: Number, default: 6 },
-      flatDiscount: { type: Number, default: 500 },
-      surgeryDiscount: { type: Number, default: 30 },
-      conditions: { type: String, default: '' },
-    },
   },
   {
     timestamps: true,
@@ -220,7 +212,6 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
       benefits: [
         { type: 'free_service', description: 'Free consultation and X-ray', freeService: { name: 'Consultation & X-ray', quantity: 1 } },
       ],
-      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year from purchase' },
       displayOrder: 1,
     },
     {
@@ -235,7 +226,7 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
       features: [
         'Complete family dental check-up and cleaning',
         'Discounted rates on cosmetic and orthodontic treatments',
-        '₹500 off per clinic visit (coupon card)',
+        '₹500 off per clinic visit',
         '30% off on surgery',
         'Free consultation and X-ray for the entire family',
       ],
@@ -244,7 +235,6 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
         { type: 'free_service', description: 'Free consultation and X-ray for family', freeService: { name: 'Family Consultation', quantity: 4 } },
         { type: 'priority_booking', description: 'Priority appointment booking' },
       ],
-      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year. Up to 4 family members.' },
       displayOrder: 2,
     },
     {
@@ -252,13 +242,13 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
       code: 'IND-PLN',
       type: 'individual',
       tier: 'silver',
-      description: 'Comprehensive individual dental care package with coupon cards',
+      description: 'Comprehensive individual dental care package',
       price: 2000,
       discountPercentage: 15,
       maxMembers: 1,
       features: [
         'Comprehensive individual dental care package',
-        '₹500 off per clinic visit (coupon card)',
+        '₹500 off per clinic visit',
         '30% off on surgery',
         'Free consultation and intraoral X-ray',
       ],
@@ -266,7 +256,6 @@ membershipPlanSchema.statics.seedDefaultPlans = async function () {
         { type: 'discount', description: '15% off on all treatments', discountPercentage: 15 },
         { type: 'free_service', description: 'Free consultation and intraoral X-ray', freeService: { name: 'Consultation & X-ray', quantity: 1 } },
       ],
-      couponConfig: { enabled: true, numberOfCoupons: 6, flatDiscount: 500, surgeryDiscount: 30, conditions: 'Valid for 1 year from purchase' },
       displayOrder: 3,
     },
   ];
