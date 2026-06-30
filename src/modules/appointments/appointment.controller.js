@@ -98,7 +98,7 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) 
  * @access  Admin
  */
 export const getAllAppointments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, date, clinic, status, appointmentType } = req.query;
+  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType } = req.query;
 
   // 1. Build filter query from params
   const filter = {};
@@ -113,6 +113,10 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
 
   if (appointmentType) {
     filter.appointmentType = appointmentType;
+  }
+
+  if (visitType) {
+    filter.visitType = visitType;
   }
 
   if (date) {
