@@ -435,6 +435,8 @@ invoiceSchema.statics.getStats = async function (matchQuery = {}) {
     // is not broken down per item type).
     {
       $addFields: {
+        // Sum of OPD fee line-item totals for this invoice (0 if no OPD items).
+        // Used as a flag: > 0 means this invoice contains OPD fee items.
         opdItemsTotal: {
           $sum: {
             $map: {
@@ -466,7 +468,17 @@ invoiceSchema.statics.getStats = async function (matchQuery = {}) {
         unpaidCount: {
           $sum: { $cond: [{ $eq: ["$paymentStatus", "unpaid"] }, 1, 0] },
         },
-        opdCollection: { $sum: "$opdItemsTotal" },
+        // Sum amountPaid (not billed amount) for invoices that contain OPD fee
+        // items — gives cash actually collected, not total billed.
+        opdCollection: {
+          $sum: {
+            $cond: [
+              { $and: [{ $gt: ["$opdItemsTotal", 0] }, { $gt: ["$amountPaid", 0] }] },
+              "$amountPaid",
+              0,
+            ],
+          },
+        },
       },
     },
   ]);

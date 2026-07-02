@@ -147,6 +147,28 @@ Note: represents billed OPD revenue, not strictly cash-collected (amountPaid is 
 Cancelled invoices are excluded because `getBillingStats` adds `status: { $ne: 'cancelled' }` to
 matchQuery before calling this method.
 
+### [2026-07-02] getAllInvoices — paymentStatus now accepts comma-separated multi-value
+**File:** `src/modules/billing/billing.controller.js` → `getAllInvoices`
+
+`paymentStatus` query param now accepts a comma-separated list (e.g. `paymentStatus=unpaid,partial`).
+Values are split, validated against the allowed enum `["unpaid", "partial", "paid"]` (unknown values
+silently dropped), and if multiple remain, the query uses `{ $in: [...] }` instead of a direct
+string match. Single-value behaviour is unchanged. No new exposure — validation guards any
+injection attempt.
+
+Motivation: the "Balance Due" stat card on the Billing page should surface both `unpaid` AND
+`partial` invoices (partial invoices carry an outstanding `balanceDue` but were previously excluded
+from the click filter because it sent only `paymentStatus=unpaid`).
+
+### [2026-07-02] getBillingStats — date filter changed from createdAt to invoiceDate
+**File:** `src/modules/billing/billing.controller.js` → `getBillingStats`
+
+The date-range match query was building `matchQuery.createdAt = { $gte, $lte }` while
+`getAllInvoices` filters on `invoiceDate`. When an invoice has a backdated `invoiceDate` (different
+month than `createdAt`), the stat card total and the invoice table row fell into different date
+buckets. Fixed by changing the field name to `invoiceDate` — consistent with `getAllInvoices` and
+with what the admin table actually displays. `Invoice.getStats()` aggregation is unchanged.
+
 ### [2026-06-30] getAllInvoices — added itemType query filter
 **File:** `src/modules/billing/billing.controller.js` → `getAllInvoices`
 
