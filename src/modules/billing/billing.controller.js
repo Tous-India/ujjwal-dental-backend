@@ -34,7 +34,13 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
   }
 
   if (paymentStatus) {
-    query.paymentStatus = paymentStatus;
+    const VALID_STATUSES = ["unpaid", "partial", "paid"];
+    const statuses = paymentStatus.split(",").filter((s) => VALID_STATUSES.includes(s));
+    if (statuses.length > 1) {
+      query.paymentStatus = { $in: statuses };
+    } else if (statuses.length === 1) {
+      query.paymentStatus = statuses[0];
+    }
   }
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
@@ -597,16 +603,15 @@ export const getBillingStats = asyncHandler(async (req, res) => {
   // Build match query (same aggregation the Billing page uses).
   const matchQuery = { status: { $ne: "cancelled" } };
 
-  // Date window: use an explicit range when given, else default to the current
-  // month — EXCEPT when scoped to a single patient, where we want the patient's
-  // all-time outstanding balance (so it matches the per-invoice balances shown
-  // on the Billing page). Callers without `patient` are unaffected.
+  // Date window: only applied when the admin explicitly provides a range.
+  // No date params → no date filter → all-time stats, consistent with the
+  // invoice table which also shows all records when no date is selected.
   let startDate = null;
   let endDate = null;
-  if (from || to || !patient) {
-    startDate = from ? new Date(from) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    endDate = to ? new Date(to) : new Date();
-    matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+  if (from || to) {
+    matchQuery.invoiceDate = {};
+    if (from) { startDate = new Date(from); matchQuery.invoiceDate.$gte = startDate; }
+    if (to) { endDate = new Date(to); matchQuery.invoiceDate.$lte = endDate; }
   }
 
   if (patient && mongoose.Types.ObjectId.isValid(patient)) {
