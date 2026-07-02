@@ -248,16 +248,7 @@ invoiceSchema.pre("save", async function () {
     const year = date.getFullYear().toString().slice(-2);
     const month = (date.getMonth() + 1).toString().padStart(2, "0");
 
-    // Count invoices this month
-    const count = await mongoose.model("Invoice").countDocuments({
-      createdAt: {
-        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-      },
-    });
-
-    const serial = (count + 1).toString().padStart(4, "0");
-    this.invoiceNumber = `INV-${year}${month}-${serial}`;
+    this.invoiceNumber = await mongoose.model("Invoice").findAvailableInvoiceNumber(year, month);
 
     // Set default due date (7 days from invoice date)
     if (!this.dueDate) {
@@ -330,6 +321,15 @@ invoiceSchema.methods.calculateTotals = function () {
     }
   } else {
     this.paymentStatus = "unpaid";
+    // If status was previously "paid" or "partially_paid" (e.g. from a direct DB edit
+    // or a future bug that sets status without updating amountPaid), reset it to "sent"
+    // so the two fields stay consistent. "sent" is correct here because the invoice was
+    // already issued to the patient — regressing to "draft" would hide it from the
+    // patient and make it unactionable. Mirrors what reverseAdminPayment already does
+    // manually (payment.controller.js) for the same reason.
+    if (["paid", "partially_paid"].includes(this.status)) {
+      this.status = "sent";
+    }
   }
 };
 
@@ -384,6 +384,38 @@ invoiceSchema.methods.cancelInvoice = function (userId, reason) {
 // ============ STATICS ============
 
 /**
+ * Find an available invoice number for the given year/month.
+ *
+ * Uses the count of existing invoices with the same prefix as the starting
+ * serial, then walks forward until an unused slot is found. This is
+ * collision-safe under concurrent creates: we verify existence before
+ * returning the number instead of blindly assigning count+1.
+ *
+ * @param {string} year  - 2-digit year, e.g. "26"
+ * @param {string} month - 2-digit month, e.g. "06"
+ * @returns {Promise<string>} Available invoice number, e.g. "INV-2606-0009"
+ */
+invoiceSchema.statics.findAvailableInvoiceNumber = async function (year, month) {
+  const prefix = `INV-${year}${month}-`;
+
+  const count = await this.countDocuments({
+    invoiceNumber: { $regex: `^${prefix}` },
+  });
+
+  const MAX_ATTEMPTS = 10;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const candidate = `${prefix}${(count + 1 + i).toString().padStart(4, "0")}`;
+    const exists = await this.findOne({ invoiceNumber: candidate }).lean();
+    if (!exists) return candidate;
+    console.warn(`[Invoice] invoiceNumber ${candidate} already taken, trying next...`);
+  }
+
+  throw new Error(
+    `[Invoice] Could not find a free invoice number after ${MAX_ATTEMPTS} attempts (prefix: ${prefix})`
+  );
+};
+
+/**
  * Aggregate invoice statistics for a given match query.
  *
  * Single source of truth for billing totals — used by the admin billing stats
@@ -396,6 +428,28 @@ invoiceSchema.methods.cancelInvoice = function (userId, reason) {
 invoiceSchema.statics.getStats = async function (matchQuery = {}) {
   const stats = await this.aggregate([
     { $match: matchQuery },
+    // Compute per-invoice OPD fee subtotal before grouping.
+    // Filters items to opd_fee type and sums item.total (post-discount, post-tax).
+    // For OPD fees taxRate is typically 0, so item.total == item.amount in practice.
+    // This represents billed OPD revenue (not strictly cash-collected, since amountPaid
+    // is not broken down per item type).
+    {
+      $addFields: {
+        opdItemsTotal: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: "$items",
+                  cond: { $eq: ["$$this.itemType", "opd_fee"] },
+                },
+              },
+              in: "$$this.total",
+            },
+          },
+        },
+      },
+    },
     {
       $group: {
         _id: null,
@@ -412,6 +466,7 @@ invoiceSchema.statics.getStats = async function (matchQuery = {}) {
         unpaidCount: {
           $sum: { $cond: [{ $eq: ["$paymentStatus", "unpaid"] }, 1, 0] },
         },
+        opdCollection: { $sum: "$opdItemsTotal" },
       },
     },
   ]);
@@ -425,6 +480,7 @@ invoiceSchema.statics.getStats = async function (matchQuery = {}) {
       paidCount: 0,
       partialCount: 0,
       unpaidCount: 0,
+      opdCollection: 0,
     }
   );
 };

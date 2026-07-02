@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import mongoose from "mongoose";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Patient from "./patient.model.js";
@@ -184,7 +185,7 @@ export const createPatient = asyncHandler(async (req, res) => {
     }
   }
 
-  // Create patient
+  // Create patient — default password set server-side; bcrypt pre-save hook hashes it
   const patient = await Patient.create({
     name,
     phone,
@@ -198,6 +199,7 @@ export const createPatient = asyncHandler(async (req, res) => {
     emergencyContact,
     preferredClinic,
     notes,
+    password: "account123",
   });
 
   ApiResponse.created(res, { patient }, "Patient created successfully");
@@ -226,6 +228,22 @@ export const updatePatient = asyncHandler(async (req, res) => {
     });
     if (emailExists) {
       return ApiResponse.error(res, "Email is already in use", 400);
+    }
+  }
+
+  // Block deactivation if patient has an active membership
+  if (req.body.isActive === false) {
+    const hasActiveMembership =
+      patient.membership?.status === "active" &&
+      patient.membership?.expiryDate &&
+      new Date(patient.membership.expiryDate) > new Date();
+
+    if (hasActiveMembership) {
+      return ApiResponse.error(
+        res,
+        "Cannot deactivate a patient with an active membership plan. Please cancel or expire the membership first.",
+        400
+      );
     }
   }
 
@@ -268,25 +286,46 @@ export const updatePatient = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Delete (deactivate) patient
+ * @desc    Permanently delete an inactive patient (hard delete)
  * @route   DELETE /api/patients/:id
  * @access  Admin
  */
 export const deletePatient = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  // Find patient
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
   const patient = await Patient.findById(id);
 
   if (!patient) {
     return ApiResponse.error(res, "Patient not found", 404);
   }
 
-  // Soft delete
-  patient.isActive = false;
-  await patient.save();
+  if (patient.isActive === true) {
+    return ApiResponse.error(
+      res,
+      "Only inactive patients can be permanently deleted. Please deactivate the patient first.",
+      400
+    );
+  }
 
-  ApiResponse.success(res, null, "Patient deactivated successfully");
+  if (patient.membership?.status === "active") {
+    return ApiResponse.error(
+      res,
+      "Cannot delete patient with active membership.",
+      400
+    );
+  }
+
+  await Patient.findByIdAndDelete(id);
+
+  ApiResponse.success(
+    res,
+    { name: patient.name },
+    `Patient "${patient.name}" has been permanently deleted.`
+  );
 });
 
 /**

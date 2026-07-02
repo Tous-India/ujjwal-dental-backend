@@ -86,6 +86,101 @@ backend/
 
 ---
 
+## Security Fixes
+
+### [2026-06-30] calculateTotals() — unpaid branch now resets status when amountPaid drops to 0
+**File:** `src/modules/billing/invoice.model.js` → `calculateTotals()` method
+
+**Problem (found via read-only diagnostic on live data):** The `else` branch (amountPaid === 0) set
+`paymentStatus = "unpaid"` but never reset `this.status`. This meant an invoice that reached
+`status = "paid"` via any incorrect path (direct DB write, future code bug, etc.) would have its
+`status` field permanently stuck at "paid" on every subsequent Mongoose save, even though
+`paymentStatus` correctly reflected "unpaid". The two fields diverged and could never self-correct.
+
+Two live invoices (INV-2606-0006, INV-2606-0007) were found in exactly this state: `status = "paid"`,
+`paymentStatus = "unpaid"`, `amountPaid = 0`, `grandTotal > 0`, `balanceDue = grandTotal` — caused
+by a direct MongoDB write that set `status: "paid"` without going through the pre-save hook.
+
+**Fix:** Added a status reset to the unpaid branch:
+```js
+if (["paid", "partially_paid"].includes(this.status)) {
+  this.status = "sent"; // issued but not paid — don't regress to draft
+}
+```
+Uses `"sent"` (not `"draft"`) because the invoice was already issued to the patient; draft would
+hide it and make it unactionable. Mirrors the pattern already used in `reverseAdminPayment`
+(payment.controller.js), which manually resets status for the same reason.
+
+The `partial` branch (amountPaid > 0 but < grandTotal) already correctly sets
+`this.status = "partially_paid"` unconditionally — it handles the "paid" → "partially_paid"
+downgrade correctly and needed no change. Only the unpaid branch was affected.
+
+### [2026-06-30] Payment/cancel guards — widened to also check status, not only paymentStatus
+**Files:**
+- `src/modules/billing/billing.controller.js` → `cancelInvoice` (~line 419)
+- `src/modules/payments/payment.controller.js` → `createPayment` (~line 171) and `collectPayment` (~line 1201)
+
+**Problem (found during same diagnostic):** All three guards checked only
+`invoice.paymentStatus === "paid"` to block actions on a fully-paid invoice. An invoice in the
+inconsistent state (`status = "paid"` but `paymentStatus = "unpaid"`) bypassed all three guards:
+- `cancelInvoice` would cancel an invoice that `status` says is paid
+- `createPayment` (old payment path via post-save hook) would record a new payment against it
+- `collectPayment` (admin per-invoice payment endpoint) would collect payment against it
+
+**Fix:** Each guard now checks both fields:
+```js
+if (invoice.paymentStatus === "paid" || invoice.status === "paid") { ... }
+```
+No change to the guarded logic (error messages, response codes) — only the trigger condition
+was widened. All three guards are now consistent with each other.
+
+### [2026-06-30] Invoice.getStats — added opdCollection field
+**File:** `src/modules/billing/invoice.model.js` → `getStats` static
+
+Added `opdCollection` to the aggregation result: the sum of `item.total` (post-discount, post-tax) for
+all line items where `itemType === "opd_fee"`, across invoices matching the caller's matchQuery.
+Implemented via `$addFields` + `$filter`/`$map`/`$sum` before the existing `$group` stage — single
+pipeline, no extra round-trip, existing return shape unchanged. Flows automatically to both
+`getBillingStats` (admin) and `getMyBillingSummary` (patient) which both call this method.
+
+Note: represents billed OPD revenue, not strictly cash-collected (amountPaid is not itemized).
+Cancelled invoices are excluded because `getBillingStats` adds `status: { $ne: 'cancelled' }` to
+matchQuery before calling this method.
+
+### [2026-06-30] getAllInvoices — added itemType query filter
+**File:** `src/modules/billing/billing.controller.js` → `getAllInvoices`
+
+Added optional `itemType` query param to `GET /api/billing/invoices`. When provided, filters to
+invoices containing at least one line item with that `itemType` (via `items.itemType` field path
+query — MongoDB's implicit `$elemMatch` for single-field equality on arrays). Route auth unchanged
+(`authProtect`).
+
+### [2026-06-30] verifyPendingPayment — amount no longer trusted from client
+**File:** `src/modules/payments/payment.controller.js` → `verifyPendingPayment`
+
+**Problem:** After Razorpay signature verification (which only covers `order_id|payment_id`, not the
+amount), invoice settlement used `req.body.amount` directly. A patient could submit a different
+figure and settle more or fewer invoices than they actually paid.
+
+**Fix:** After signature verification, the handler now fetches the Razorpay order via
+`razorpay.orders.fetch(razorpay_order_id)` and uses `order.amount_paid / 100` (paise → rupees)
+as the authoritative settlement amount. `req.body.amount` is no longer used for settlement or the
+Payment record.
+
+### [2026-06-30] purchaseMembership — temporary password no longer predictable
+**File:** `src/modules/memberships/membership.controller.js` → `purchaseMembership`
+
+**Problem:** New patients created during a self-service membership purchase were given an
+auto-generated password of `name.slice(0,4) + phone.slice(-4)` — derivable from publicly
+known information and sent in plaintext via email.
+
+**Fix:** The password is now generated as `crypto.randomBytes(12).toString("base64url")` — 96 bits
+of cryptographically random entropy, not derivable from name or phone. The password is still
+emailed once at account creation (acceptable for initial account setup) and is still hashed with
+bcrypt (12 rounds) by the Patient model's pre-save hook before storage.
+
+---
+
 ## API Endpoints
 
 Base URL: `http://localhost:5000/api`
@@ -231,11 +326,13 @@ Base URL: `http://localhost:5000/api`
 
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
-| POST | `/assign` | Admin | Assign membership to patient |
+| POST | `/assign` | Admin | Assign membership to patient — rejects `discontinued: true` plans with 400 |
 | POST | `/renew/:patientId` | Admin | Renew patient's membership |
 | POST | `/cancel/:patientId` | Admin | Cancel patient's membership |
 | GET | `/members` | Admin | List all active members |
 | GET | `/stats` | Admin | Membership statistics |
+
+> **Discontinued plan guard** (`assignManualMembership`): after looking up the plan by `planId`, the handler checks `plan.discontinued === true` and rejects the request with HTTP 400 ("This plan has been discontinued and cannot be assigned"). This is the authoritative server-side enforcement; the frontend also disables the corresponding `MenuItem` so the option cannot be selected in the UI.
 
 ### Billing (`/api/billing`)
 
@@ -465,6 +562,25 @@ Base URL: `http://localhost:5000/api`
 - ✅ Fixed admin login 401 error (password double-hashing issue)
 - ✅ Fixed notification routes ordering (admin routes before :id routes)
 - ✅ Improved error handling across all modules
+
+### [2026-07-02] Patient Payment History Endpoint
+**Files:** `billing.controller.js`, `billing.routes.js`
+
+- ✅ Added `GET /api/billing/invoices/my-payment-history` (`patientProtect`) — returns payment entries derived from invoices where `amountPaid > 0` and `status ≠ cancelled`
+- ✅ Handler scopes query to `req.patient._id` (from token) — fully IDOR-safe, no client-supplied patient ID accepted
+- ✅ Normalises `"pay-at-clinic"` paymentMethod → `"cash"` for consistent frontend display
+- ✅ Returns `{ _id, invoiceNumber, date, service, amountPaid, paymentMethod, paymentStatus, grandTotal }` per entry via `ApiResponse.success`
+- ✅ Route registered before the `/:id` catch-all in `billing.routes.js` to avoid Express route-param conflict
+
+**Why invoice-derived, not Payment collection:** OPD fee payments recorded via `PATCH /billing/invoices/:id/payment` update `invoice.amountPaid` only — no Payment document is created. The Payment collection only has records from the `POST /payments/admin/record-payment` path. The invoice-based approach covers both paths.
+
+### [2026-07-02] Membership Notifications on Assign & Renew
+**File:** `membership.controller.js`
+
+- ✅ Added `notify()` call in `assignManualMembership` after `ApiResponse.success()`: sends `type: "membership_renewal"` in-app + email notification to the patient with plan name and validity dates
+- ✅ Added `notify()` call in `renewMembership` after `ApiResponse.success()`: sends `type: "membership_renewal"` in-app + email notification with renewed plan name and new validity window
+- ✅ Both calls are fire-and-forget (the `notify()` helper has an internal try/catch) — notification failure never fails the membership operation itself
+- ✅ `membership_assigned` is not a valid notification type enum value; `membership_renewal` (already used by `purchaseMembership`) was used instead
 
 ---
 

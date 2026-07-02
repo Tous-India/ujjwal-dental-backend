@@ -22,6 +22,9 @@ const router = Router();
 // Get all membership plans - Public
 router.get("/plans", membershipController.getAllPlans);
 
+// Get active subscriber counts + preview for all plans (Admin) — MUST precede /plans/:id
+router.get("/plans/subscriber-counts", authProtect, membershipController.getPlanSubscriberCounts);
+
 // Get single plan by ID - Public
 router.get("/plans/:id", membershipController.getPlanById);
 

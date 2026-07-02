@@ -29,6 +29,9 @@ router.get("/daily-collection", authProtect, paymentController.getDailyCollectio
 // Get payment by payment number
 router.get("/number/:paymentNumber", authProtect, paymentController.getPaymentByNumber);
 
+// Export filtered payments as PDF — must be before /:id to avoid param conflict
+router.get("/export/pdf", authProtect, paymentController.exportPaymentsPdf);
+
 // Get single payment by ID
 router.get("/:id", anyAuth, paymentController.getPaymentById);
 

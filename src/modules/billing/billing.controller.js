@@ -20,7 +20,7 @@ import PDFDocument from "pdfkit";
  * @access  Admin
  */
 export const getAllInvoices = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to } = req.query;
+  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType } = req.query;
 
   // Build query
   const query = {};
@@ -39,6 +39,11 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     query.clinic = clinic;
+  }
+
+  // Filter to invoices containing at least one item of the given type
+  if (itemType) {
+    query["items.itemType"] = itemType;
   }
 
   // Date range filter
@@ -410,8 +415,9 @@ export const cancelInvoice = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invoice not found", 404);
   }
 
-  // Cannot cancel paid invoices
-  if (invoice.paymentStatus === "paid") {
+  // Cannot cancel paid invoices — check both fields: an inconsistent invoice
+  // (status="paid" but paymentStatus="unpaid") must also be blocked here.
+  if (invoice.paymentStatus === "paid" || invoice.status === "paid") {
     return ApiResponse.error(res, "Cannot cancel a fully paid invoice", 400);
   }
 
@@ -892,6 +898,66 @@ export const deleteInvoice = asyncHandler(async (req, res) => {
   await Invoice.findByIdAndDelete(id);
 
   ApiResponse.success(res, null, "Invoice deleted permanently");
+});
+
+/**
+ * @desc    Get the logged-in patient's payment history derived from invoices
+ * @route   GET /api/billing/invoices/my-payment-history
+ * @access  Patient (Bearer token)
+ *
+ * Returns all non-cancelled invoices where amountPaid > 0, shaped as payment
+ * entries. Patient ID is derived from the auth token — never from a client param
+ * (IDOR-safe). Payments recorded via invoice.amountPaid (not Payment collection)
+ * are correctly surfaced here.
+ */
+export const getMyPaymentHistory = asyncHandler(async (req, res) => {
+  const patientId = req.patient?._id;
+  if (!patientId) {
+    return ApiResponse.error(res, "Not authorized", 401);
+  }
+
+  const invoices = await Invoice.find({
+    patient: patientId,
+    amountPaid: { $gt: 0 },
+    status: { $ne: "cancelled" },
+  })
+    .select("invoiceNumber invoiceDate amountPaid paymentMethod paymentStatus grandTotal items")
+    .sort({ invoiceDate: -1 });
+
+  const itemTypeLabels = {
+    opd_fee: "OPD Fee",
+    treatment: "Treatment",
+    surgery: "Surgery",
+    test: "Test",
+    medicine: "Medicine",
+    membership: "Membership",
+    other: "Other",
+  };
+
+  const payments = invoices.map((inv) => {
+    const firstItem = inv.items?.[0];
+    const service =
+      firstItem?.description ||
+      itemTypeLabels[firstItem?.itemType] ||
+      "Treatment";
+
+    // Normalise legacy "pay-at-clinic" to cash
+    let paymentMode = inv.paymentMethod || "cash";
+    if (paymentMode === "pay-at-clinic") paymentMode = "cash";
+
+    return {
+      _id: inv._id,
+      invoiceNumber: inv.invoiceNumber,
+      date: inv.invoiceDate,
+      service,
+      amountPaid: inv.amountPaid,
+      paymentMethod: paymentMode,
+      paymentStatus: inv.paymentStatus,
+      grandTotal: inv.grandTotal,
+    };
+  });
+
+  ApiResponse.success(res, payments, "Payment history fetched successfully");
 });
 
 /**

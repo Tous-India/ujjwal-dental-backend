@@ -83,55 +83,64 @@ const authProtect = async (req, res, next) => {
  * Similar to authProtect but for patient authentication
  */
 const patientProtect = async (req, res, next) => {
+  let token;
+
+  if (req.cookies?.patient_token) {
+    token = req.cookies.patient_token;
+  } else if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
+    token = req.headers.authorization.split(" ")[1];
+  }
+
+  if (!token) {
+    return ApiResponse.error(res, "Not authorized, token missing", 401);
+  }
+
+  // JWT verification — only genuine JWT errors (expired, malformed, bad signature) are caught here.
+  // Keeping DB lookup outside this block ensures MongoDB errors return 500, not 401.
+  let decoded;
   try {
-    let token;
-
-    if (req.cookies?.patient_token) {
-      token = req.cookies.patient_token;
-    } else if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith("Bearer")
-    ) {
-      token = req.headers.authorization.split(" ")[1];
-    }
-
-    if (!token) {
-      return ApiResponse.error(res, "Not authorized, token missing", 401);
-    }
-
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Check if it's a patient token
-    if (decoded.type !== "patient") {
-      return ApiResponse.error(res, "Invalid token type", 401);
-    }
-
-    if (!decoded.id) {
-      return ApiResponse.error(res, "Invalid token payload", 401);
-    }
-
-    // Fetch patient from database
-    const patient = await Patient.findById(decoded.id);
-
-    if (!patient) {
-      return ApiResponse.error(res, "Patient not found", 401);
-    }
-
-    if (!patient.isActive) {
-      return ApiResponse.error(res, "Patient account is deactivated", 401);
-    }
-
-    // Attach patient to request
-    req.patient = patient;
-    req.userType = "patient";
-    next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       return ApiResponse.error(res, "Token has expired, please login again", 401);
     }
     return ApiResponse.error(res, "Not authorized, token invalid", 401);
   }
+
+  // Check if it's a patient token
+  if (decoded.type !== "patient") {
+    return ApiResponse.error(res, "Invalid token type", 401);
+  }
+
+  if (!decoded.id) {
+    return ApiResponse.error(res, "Invalid token payload", 401);
+  }
+
+  // Fetch patient from database — outside the JWT catch so transient DB errors
+  // (timeouts, ECONNRESET, pool exhaustion) propagate as 500 via next(err),
+  // not as 401 that would incorrectly log the patient out.
+  let patient;
+  try {
+    patient = await Patient.findById(decoded.id);
+  } catch (dbError) {
+    return next(dbError);
+  }
+
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 401);
+  }
+
+  if (!patient.isActive) {
+    return ApiResponse.error(res, "Patient account is deactivated", 401);
+  }
+
+  // Attach patient to request
+  req.patient = patient;
+  req.userType = "patient";
+  next();
 };
 
 /**

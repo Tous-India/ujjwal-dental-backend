@@ -2172,7 +2172,26 @@ export const getAvailableSlots = async (clinicId, dateStr) => {
 };
 ```
 
-### 9.5 Discount Calculation
+### 9.5 Patient Auth — DB Error Masquerading as 401 (Fixed)
+
+**Root cause (2026-07-01):** `patientProtect` in `auth.middleware.js` originally wrapped both
+`jwt.verify()` and `Patient.findById()` in a single try/catch. Any transient MongoDB error
+(timeout, ECONNRESET, connection pool exhaustion) was caught by the same handler as JWT
+errors and returned `401 "Not authorized, token invalid"` instead of a 500. The frontend
+401 interceptor treated this as an auth failure and immediately logged the patient out —
+even though their token was perfectly valid.
+
+**Fix applied to `patientProtect` only (authProtect/anyAuth/adminOnly unchanged):**
+- JWT `verify()` is now in its own isolated try/catch — only genuine JWT errors (expired,
+  malformed, bad signature) are caught there.
+- `Patient.findById()` is outside that catch, in its own try/catch that calls `next(dbError)`,
+  routing MongoDB errors to the Express global error handler and returning 500 instead of 401.
+
+**Why this matters:** The 30-second `usePatientUnreadCount` polling hook means any transient
+DB blip during a poll was guaranteed to log the patient out. After this fix, DB errors no
+longer reach the 401 interceptor.
+
+### 9.6 Discount Calculation
 
 ```javascript
 export const calculateBilling = async (patientId, items) => {
@@ -2211,6 +2230,108 @@ export const calculateBilling = async (patientId, items) => {
   return processedItems;
 };
 ```
+
+---
+
+## 9.7 Appointment Rescheduling (Admin-only)
+
+### What changes
+- `appointment.date` and `appointment.timeSlot` only
+- `appointment.status` resets to `"scheduled"`
+- `appointment.tokenNumber` + `appointment.tokenDateKey` are regenerated for the new date via `nextDailyToken`
+- `appointment.notes` gets a new line appended: `"Rescheduled from [old date] [old slot] to [new date] [new slot] — Reason: ..."` (existing notes preserved)
+- An in-app notification (`type: "appointment_reschedule"`) is sent to the patient
+
+### What does NOT change
+- `appointment.invoice`, `appointment.paymentStatus`, `appointment.opdFeePaid`, `appointment.amountPaid` — untouched
+- `appointment.patient`, `appointment.clinic`, `appointment.fee`, `appointment.treatmentId` — untouched
+- `appointment.appointmentNumber` — untouched
+
+### Security
+- Route: `POST /api/appointments/:id/reschedule` — requires `authProtect` (admin/staff only)
+- Slot check is server-side: `countDocuments` (capacity-aware, excludes self) — not just `findOne`
+- Past dates and past time slots for today are rejected with 400
+
+### Frontend
+- `RescheduleAppointmentModal.jsx` — new modal in `frontend/src/components/admin/modals/`
+- Reschedule button (cyan `EventRepeatIcon`) added to each row for `scheduled` and `confirmed` appointments only
+
+---
+
+## 9.8 Patient Portal Sync After Reschedule (2026-07-01)
+
+### How updated date/time reaches the patient
+
+No websockets or SSE are used. Sync is purely poll-based:
+
+| Mechanism | Setting | Notes |
+|-----------|---------|-------|
+| `useMyAppointments` staleTime | 30 s | Background staleness threshold |
+| `useMyAppointments` refetchOnMount | `"always"` | **Always** fetches fresh data on page navigation, regardless of staleness |
+| `useMyAppointments` refetchOnWindowFocus | `true` | Overrides global `false` — refetches when patient switches back to the browser tab |
+| `useMyAppointments` refetchInterval | 60 s | Background auto-refresh every 60 s while page is mounted |
+| `usePatientUnreadCount` refetchInterval | 30 s | Polls notification count; patient sees "new notification" badge within 30 s |
+
+After admin reschedules: the patient sees the updated date/time **immediately on next page navigation or tab focus**, and within **at most 60 seconds** on the currently open page via background interval.
+
+### Bug fix (2026-07-01) — Stale data after reschedule
+
+**Root cause:** The global `QueryClient` in `main.jsx` sets `refetchOnWindowFocus: false` and `staleTime: 5 * 60 * 1000`. `useMyAppointments` was not overriding these, so:
+- Switching browser tabs never triggered a refetch
+- Navigating to the detail page within 30 s of last fetch served cached (old) data
+- `AppointmentDetail.jsx` has no independent query — it finds the appointment by `_id` inside the list returned by `useMyAppointments`, so its freshness was entirely dependent on the list query
+
+**Fix applied to `frontend/src/hooks/patient/useMyAppointments.js`:**
+- Added `refetchOnMount: "always"` — page navigation always triggers a fresh API call
+- Added `refetchOnWindowFocus: true` — tab focus triggers a fresh API call (overrides global `false`)
+
+**UX improvement applied to `frontend/src/pages/patient/AppointmentDetail.jsx`:**
+- Added a manual Refresh icon button in the header that calls `refetch()` directly
+- Added "updated Xs ago" caption next to the appointment number
+
+### Rescheduled badge on patient appointments list
+
+`frontend/src/pages/patient/Appointments.jsx` detects rescheduled appointments by:
+```js
+apt.notes?.includes("Rescheduled from")
+```
+This string is always prepended by the reschedule handler when it appends the audit trail to `appointment.notes`. When true, a small teal "Rescheduled" chip (with `EventRepeatIcon`) appears below the status chip in the Status column. The status chip itself stays unchanged (still shows "Scheduled" / "Confirmed").
+
+### In-app notification icon
+
+`frontend/src/pages/patient/Notifications.jsx` — `typeIcons["appointment_reschedule"]` is now a teal `EventRepeatIcon` (`#0891b2`). Notifications of type `appointment_reschedule` no longer fall back to the generic gray info icon.
+
+### Email notification
+
+**Skipped.** The reschedule handler passes `sendEmail: false` to `notify()`. No email template exists for appointment reschedule (only confirmation and cancellation templates exist). Tech debt: create an email template for reschedule when email notification coverage is extended.
+
+---
+
+## 9.9 Member Patient Always-Active Invariant (2026-07-01)
+
+### Business rule
+
+A patient with an active membership (`membership.status === "active"` AND `membership.expiryDate > now`) is **always** `isActive: true`. They must never be deactivated while the membership is valid.
+
+### Enforcement layers (defence-in-depth)
+
+| Layer | Where | What it does |
+|-------|-------|-------------|
+| **1 — Controller guard** | `updatePatient` in `patient.controller.js` | If `req.body.isActive === false` and patient has active membership → returns 400 "Cannot deactivate a patient with an active membership plan..." |
+| **2 — Model pre-save hook** | `patient.model.js` second pre('save') hook | Forces `isActive = true` before any save if active membership is detected — catches any code path that bypasses the controller |
+| **3 — Frontend guard** | `PatientDetailModal.jsx` | Deactivate button is `disabled={hasMembership}` with MUI Tooltip "Patient has an active membership — cannot deactivate" — was already in place |
+
+### Membership field paths
+- Status: `patient.membership.status` (enum: `"active"`, `"expired"`, `"cancelled"`)
+- Expiry: `patient.membership.expiryDate` (Date)
+- Virtual: `patient.hasMembership` → `true` if status = "active" AND expiryDate > now (included in all JSON responses via `toJSON: { virtuals: true }`)
+
+### One-time data fix (2026-07-01)
+Script `backend/src/scripts/fixMemberPatientStatus.js` was run to re-activate patients who had `isActive: false` despite an active membership. Query used:
+```js
+Patient.find({ "membership.status": "active", "membership.expiryDate": { $gt: new Date() }, isActive: false })
+```
+Script deletes itself after use.
 
 ---
 

@@ -34,6 +34,10 @@ router.get("/invoices/number/:invoiceNumber", authProtect, billingController.get
 // MUST be registered before "/invoices/:id" so "my-invoices" isn't treated as an id.
 router.get("/invoices/my-invoices", patientProtect, billingController.getMyInvoices);
 
+// Get the logged-in patient's payment history derived from invoices.amountPaid (token-derived, IDOR-safe).
+// MUST be registered before "/invoices/:id".
+router.get("/invoices/my-payment-history", patientProtect, billingController.getMyPaymentHistory);
+
 // Get the logged-in patient's own billing summary / outstanding balance (token-derived, IDOR-safe).
 router.get("/my-summary", patientProtect, billingController.getMyBillingSummary);
 
