@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as appointmentController from "./appointment.controller.js";
-import authProtect, { anyAuth, adminOnly, optionalAuth } from "../../middlewares/auth.middleware.js";
+import authProtect, { anyAuth, adminOnly, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
 import Appointment from "./appointment.model.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 const router = Router();
@@ -61,6 +61,9 @@ router.post("/", optionalAuth, appointmentController.createAppointment);
 // Book appointment after payment (public - for online booking)
 router.post("/book-with-payment", appointmentController.bookAppointmentWithPayment);
 
+// Book free OPD appointment for logged-in patients with active membership
+router.post("/book-free", patientProtect, appointmentController.bookAppointmentFree);
+
 // Update appointment details — staff/admin
 router.patch("/:id", authProtect, appointmentController.updateAppointment);
 
@@ -76,8 +79,8 @@ router.post("/:id/complete", authProtect, appointmentController.completeAppointm
 // Cancel appointment — patient-self or staff/admin
 router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, appointmentController.cancelAppointment);
 
-// Reschedule appointment — patient-self or staff/admin
-router.post("/:id/reschedule", anyAuth, appointmentSelfOrAdmin, appointmentController.rescheduleAppointment);
+// Reschedule appointment — admin/staff only
+router.post("/:id/reschedule", authProtect, appointmentController.rescheduleAppointment);
 
 // Delete appointment permanently — admin only
 router.delete("/:id", authProtect, adminOnly, appointmentController.deleteAppointment);

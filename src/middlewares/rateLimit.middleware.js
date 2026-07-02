@@ -12,27 +12,30 @@ import { RateLimitError } from "../utils/AppError.js";
  * existing RateLimitError -> global error middleware for a consistent response shape.
  */
 
-const skipInTest = () => process.env.NODE_ENV === "test";
+// Skip rate limiting in non-production environments so dev testing and the
+// vitest suite (which logs in many times from the same IP) are never throttled.
+const skipInDev = () =>
+  process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development";
 
-// Strict: 5 attempts per 15 minutes per IP
+// Strict: 5 attempts per 15 minutes per IP (production only)
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: skipInTest,
+  skip: skipInDev,
   handler: (req, res, next) => {
     next(new RateLimitError("Too many attempts. Please try again in 15 minutes."));
   },
 });
 
-// Loose: 300 requests per 15 minutes per IP
+// Loose: 300 requests per 15 minutes per IP (production only)
 export const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: skipInTest,
+  skip: skipInDev,
   handler: (req, res, next) => {
     next(new RateLimitError());
   },

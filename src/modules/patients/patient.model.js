@@ -289,6 +289,17 @@ patientSchema.pre("save", async function () {
 
   this.password = await bcrypt.hash(this.password, 12);
 });
+
+// Safety net: a patient with an active membership is always Active
+patientSchema.pre("save", function () {
+  if (
+    this.membership?.status === "active" &&
+    this.membership?.expiryDate &&
+    new Date(this.membership.expiryDate) > new Date()
+  ) {
+    this.isActive = true;
+  }
+});
 // Create and export the model
 const Patient = mongoose.model("Patient", patientSchema);
 

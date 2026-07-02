@@ -1,6 +1,7 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { notify } from "../../utils/notifyHelper.js";
+import { nextDailyToken, istDateKey } from "./appointmentToken.js";
 import Appointment from "./appointment.model.js";
 import Patient from "../patients/patient.model.js";
 import Payment from "../payments/payment.model.js";
@@ -545,6 +546,11 @@ export const createAppointment = asyncHandler(async (req, res) => {
     lineItemDescription = "OPD Consultation";
   }
 
+  // Server-side guard: cannot claim payment collected if there is no fee
+  if (appointmentOpdFeePaid && !appointmentIsFree && resolvedFee <= 0) {
+    return ApiResponse.error(res, "Cannot mark payment as collected for a zero-fee appointment", 400);
+  }
+
   /* =======================
      CREATE APPOINTMENT
      (NO status, NO tokenNumber)
@@ -574,7 +580,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     isFree: appointmentIsFree,
     opdFeePaid: appointmentOpdFeePaid,
     paymentMethod: appointmentIsFree ? "free" : (incomingPaymentMethod === "online" ? "online" : "cash"),
-    paymentStatus: incomingPaymentMethod === "free" ? "free" : "unpaid",
+    paymentStatus: appointmentIsFree ? "free" : (appointmentOpdFeePaid ? "paid" : "unpaid"),
     source: source || "walk_in",
     notes,
     createdBy: req.user?._id,
@@ -602,8 +608,10 @@ export const createAppointment = asyncHandler(async (req, res) => {
             unitPrice: resolvedFee,
           },
         ],
-        amountPaid: 0,
-        paymentMethod: "pay-at-clinic",
+        amountPaid: appointmentOpdFeePaid ? resolvedFee : 0,
+        paymentMethod: appointmentOpdFeePaid
+          ? (incomingPaymentMethod === "online" ? "online" : "cash")
+          : "pay-at-clinic",
         createdBy: req.user?._id,
       });
       invoiceId = invoice._id;
@@ -825,6 +833,37 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
   payment.patient = patient._id;
   await payment.save();
 
+  /* =======================
+     AUTO-INVOICE (already paid via Razorpay)
+     Mirrors the auto-invoice block in createAppointment, but this booking
+     is already paid in full, so amountPaid = the payment amount and the
+     invoice is created already marked paid.
+  ======================== */
+
+  let invoiceId = null;
+  try {
+    const invoice = await generateInvoice({
+      patient,
+      clinic,
+      appointment: appointment._id,
+      items: [
+        {
+          itemType: "opd_fee",
+          description: "OPD Consultation",
+          unitPrice: payment.amount,
+        },
+      ],
+      amountPaid: payment.amount,
+      paymentMethod: "online",
+    });
+    invoiceId = invoice._id;
+    appointment.invoice = invoice._id;
+    await appointment.save();
+  } catch (err) {
+    // Don't fail the booking if invoice generation hiccups; log for follow-up.
+    console.error("Auto-invoice for online-paid appointment failed:", err.message);
+  }
+
   // Send booking confirmation email
   if (patient.email) {
     const apptDate = appointment.date
@@ -867,6 +906,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
       status: appointment.status,
       opdFee: appointment.opdFee,
       opdFeePaid: true,
+      invoiceId,
       patient: {
         id: patient._id,
         name: patient.name,
@@ -877,6 +917,117 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
   );
 
   notify({ recipientId: patient._id, recipientModel: "Patient", type: "appointment_confirmation", title: "Appointment Confirmed", message: `Your appointment #${appointment.appointmentNumber} has been booked successfully. Token: ${appointment.tokenNumber}`, sendEmail: true, appointment: appointment._id });
+});
+
+/**
+ * @desc    Book a free OPD appointment for a logged-in patient with an active membership.
+ *          Membership status is re-read from DB on every request — never trusts client flags.
+ * @route   POST /api/appointments/book-free
+ * @access  Patient (patientProtect)
+ */
+export const bookAppointmentFree = asyncHandler(async (req, res) => {
+  // patientProtect already loaded req.patient fresh from DB
+  const patient = req.patient;
+
+  // Server-authoritative membership check
+  if (!patient.hasMembership) {
+    return ApiResponse.error(
+      res,
+      "An active membership is required to book a free OPD appointment",
+      403,
+    );
+  }
+
+  const { clinic, date, timeSlot, reason, type, bookingType } = req.body;
+
+  const urgency = bookingType || "regular";
+  if (!["regular", "emergency"].includes(urgency)) {
+    return ApiResponse.error(res, "bookingType must be 'regular' or 'emergency'", 400);
+  }
+
+  if (!clinic || !date || !timeSlot) {
+    return ApiResponse.error(res, "Clinic, date, and time slot are required", 400);
+  }
+
+  if (!reason) {
+    return ApiResponse.error(res, "Reason for visit is required", 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(clinic)) {
+    return ApiResponse.error(res, "Invalid clinic ID", 400);
+  }
+
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
+  if (slotError) {
+    return ApiResponse.error(res, slotError.message, slotError.status);
+  }
+
+  const appointment = await Appointment.create({
+    patient: patient._id,
+    clinic,
+    date,
+    timeSlot,
+    reason,
+    type: type || "regular",
+    appointmentType: urgency,
+    visitType: "opd",
+    opdFee: 0,
+    fee: 0,
+    isFree: true,
+    opdFeePaid: true,
+    paymentMethod: "free",
+    paymentStatus: "free",
+    source: "online",
+  });
+
+  if (patient.email) {
+    const apptDate = appointment.date
+      ? new Date(appointment.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+      : "N/A";
+    sendEmail({
+      to: patient.email,
+      subject: "Appointment Confirmed (Membership Benefit) - Ujjwal Dental Clinic",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
+          <p>Hello ${patient.name || "Patient"},</p>
+          <p>Your appointment has been <strong style="color: #4caf50;">confirmed</strong>!</p>
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+            <p style="margin: 4px 0; color: #065f46; font-size: 13px;">✓ OPD fee waived — Membership benefit applied</p>
+          </div>
+          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 4px 0;"><strong>Token #:</strong> ${appointment.tokenNumber || "N/A"}</p>
+            <p style="margin: 4px 0;"><strong>Date:</strong> ${apptDate}</p>
+            <p style="margin: 4px 0;"><strong>Time:</strong> ${appointment.timeSlot || "N/A"}</p>
+            <p style="margin: 4px 0;"><strong>Appointment #:</strong> ${appointment.appointmentNumber || "N/A"}</p>
+          </div>
+          <p>Please arrive 10 minutes before your scheduled time.</p>
+          <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+          <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
+        </div>
+      `,
+      text: `Hello ${patient.name}, Your appointment is confirmed. Token: ${appointment.tokenNumber}, Date: ${apptDate}, Time: ${appointment.timeSlot}. OPD fee waived (membership benefit). Please arrive 10 minutes early.`,
+    }).catch((err) => console.error("[Appointment] Failed to send confirmation email:", err));
+  }
+
+  return ApiResponse.created(
+    res,
+    {
+      appointmentId: appointment._id,
+      appointmentNumber: appointment.appointmentNumber,
+      tokenNumber: appointment.tokenNumber,
+      status: appointment.status,
+      opdFee: 0,
+      isFree: true,
+      opdFeePaid: true,
+      patient: {
+        id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+      },
+    },
+    "Appointment booked successfully",
+  );
 });
 
 /**
@@ -1318,9 +1469,9 @@ export const cancelAppointment = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Reschedule appointment
+ * @desc    Reschedule appointment (admin/staff only)
  * @route   POST /api/appointments/:id/reschedule
- * @access  Admin / Patient
+ * @access  Admin
  */
 export const rescheduleAppointment = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -1331,11 +1482,7 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
   ======================== */
 
   if (!newDate || !newTimeSlot) {
-    return ApiResponse.error(
-      res,
-      "New date and new time slot are required",
-      400,
-    );
+    return ApiResponse.error(res, "New date and new time slot are required", 400);
   }
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -1346,61 +1493,124 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
      1. FIND APPOINTMENT
   ======================== */
 
-  const appointment = await Appointment.findById(id);
+  const appointment = await Appointment.findById(id).populate("patient", "_id name");
 
   if (!appointment) {
     return ApiResponse.error(res, "Appointment not found", 404);
   }
 
-  if (
-    appointment.status === "cancelled" ||
-    appointment.status === "completed"
-  ) {
-    return ApiResponse.error(
-      res,
-      "This appointment cannot be rescheduled",
-      400,
-    );
+  if (["cancelled", "completed"].includes(appointment.status)) {
+    return ApiResponse.error(res, "This appointment cannot be rescheduled", 400);
   }
 
   /* =======================
-     2. CHECK SLOT AVAILABILITY
+     2. VALIDATE NEW DATE / TIME
   ======================== */
 
-  const startOfDay = new Date(newDate);
-  startOfDay.setHours(0, 0, 0, 0);
+  const requestedDate = new Date(newDate);
+  if (isNaN(requestedDate.getTime())) {
+    return ApiResponse.error(res, "Invalid date format", 400);
+  }
 
-  const endOfDay = new Date(newDate);
-  endOfDay.setHours(23, 59, 59, 999);
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const dayStart = new Date(requestedDate);
+  dayStart.setHours(0, 0, 0, 0);
 
-  const slotAlreadyBooked = await Appointment.findOne({
-    _id: { $ne: appointment._id }, // exclude same appointment
+  if (dayStart < todayStart) {
+    return ApiResponse.error(res, "Cannot reschedule to a past date", 400);
+  }
+
+  if (dayStart.getTime() === todayStart.getTime()) {
+    const [h, m] = String(newTimeSlot).split(":").map(Number);
+    const slotMinutes = h * 60 + m;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    if (slotMinutes <= nowMinutes) {
+      return ApiResponse.error(res, "This time slot has already passed", 400);
+    }
+  }
+
+  /* =======================
+     3. SLOT CAPACITY CHECK
+     Exclude this appointment from the count (it is moving, not adding).
+     Capacity: 2 for regular bookings, 3 for emergency (same rule as create).
+  ======================== */
+
+  const dayEnd = new Date(requestedDate);
+  dayEnd.setHours(23, 59, 59, 999);
+  const capacity = slotCapacityFor(appointment.appointmentType);
+  const slotCount = await Appointment.countDocuments({
+    _id: { $ne: appointment._id },
     clinic: appointment.clinic,
-    date: { $gte: startOfDay, $lte: endOfDay },
+    date: { $gte: dayStart, $lte: dayEnd },
     timeSlot: newTimeSlot,
     status: { $ne: "cancelled" },
   });
 
-  if (slotAlreadyBooked) {
-    return ApiResponse.error(res, "Selected time slot is already booked", 409);
+  if (slotCount >= capacity) {
+    return ApiResponse.error(res, "This time slot is fully booked", 409);
   }
 
   /* =======================
-     3. UPDATE DATE & TIME
+     4. RECORD OLD VALUES FOR AUDIT TRAIL
+  ======================== */
+
+  const oldDateStr = new Date(appointment.date).toLocaleDateString("en-IN", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+  const oldTimeSlot = appointment.timeSlot;
+
+  /* =======================
+     5. UPDATE DATE, TIME, STATUS
   ======================== */
 
   appointment.date = newDate;
   appointment.timeSlot = newTimeSlot;
-  appointment.status = "scheduled"; // reset to scheduled
-
-  if (reason) {
-    appointment.notes = `Rescheduled: ${reason}`;
-  }
-
-  await appointment.save(); // pre-save will regenerate tokenNumber
+  appointment.status = "scheduled";
 
   /* =======================
-     4. RESPONSE
+     6. REGENERATE TOKEN FOR NEW DATE
+     The pre-save hook only runs for new documents, so we regenerate manually.
+     istDateKey() converts the new appointment date to an IST date string (YYYY-MM-DD)
+     so the token series resets correctly at IST midnight for the new date.
+  ======================== */
+
+  const newDateKey = istDateKey(new Date(newDate));
+  appointment.tokenDateKey = newDateKey;
+  appointment.tokenNumber = await nextDailyToken(appointment.clinic, newDateKey);
+
+  /* =======================
+     7. APPEND AUDIT TRAIL (preserve existing notes)
+  ======================== */
+
+  const newDateStr = new Date(newDate).toLocaleDateString("en-IN", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+  const rescheduleNote = `Rescheduled from ${oldDateStr} ${oldTimeSlot} to ${newDateStr} ${newTimeSlot}${reason ? ` — Reason: ${reason}` : ""}`;
+  appointment.notes = appointment.notes
+    ? `${appointment.notes}\n${rescheduleNote}`
+    : rescheduleNote;
+
+  await appointment.save();
+
+  /* =======================
+     8. NOTIFY PATIENT (in-app only)
+  ======================== */
+
+  const patientId = appointment.patient?._id || appointment.patient;
+  notify({
+    recipientId: patientId,
+    recipientModel: "Patient",
+    type: "appointment_reschedule",
+    title: "Appointment Rescheduled",
+    message: `Your appointment #${appointment.appointmentNumber} has been rescheduled to ${newDateStr} at ${newTimeSlot}.`,
+    sendEmail: false,
+    appointment: appointment._id,
+  });
+
+  /* =======================
+     9. RESPONSE
   ======================== */
 
   ApiResponse.success(res, appointment, "Appointment rescheduled successfully");

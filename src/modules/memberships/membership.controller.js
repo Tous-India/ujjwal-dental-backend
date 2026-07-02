@@ -5,6 +5,7 @@ import Patient from "../patients/patient.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
 import { notify } from "../../utils/notifyHelper.js";
 import mongoose from "mongoose";
+import crypto from "crypto";
 
 // Map a membership paymentMethod to an invoice-allowed paymentMethod.
 const toInvoicePaymentMethod = (method) => {
@@ -358,10 +359,12 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(planId)) {
       return ApiResponse.error(res, "Invalid plan ID", 400);
     }
-    // Look up WITHOUT filtering on isActive so discontinued plans are allowed
     const plan = await MembershipPlan.findById(planId);
     if (!plan) {
       return ApiResponse.error(res, "Membership plan not found", 404);
+    }
+    if (!plan.isActive || plan.discontinued) {
+      return ApiResponse.error(res, "This plan is not active and cannot be assigned", 400);
     }
     resolvedPlanId = plan._id;
     if (!resolvedPlanName) resolvedPlanName = plan.name;
@@ -468,6 +471,15 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
     },
     "Membership assigned successfully",
   );
+
+  notify({
+    recipientId: patient._id,
+    recipientModel: "Patient",
+    type: "membership_renewal",
+    title: "Membership Plan Activated",
+    message: `Your ${resolvedPlanName} membership has been activated. Valid from ${start.toLocaleDateString("en-IN")} to ${expiry.toLocaleDateString("en-IN")}. Enjoy your benefits!`,
+    sendEmail: true,
+  });
 });
 
 /**
@@ -554,6 +566,15 @@ export const renewMembership = asyncHandler(async (req, res) => {
     },
     "Membership renewed successfully"
   );
+
+  notify({
+    recipientId: patient._id,
+    recipientModel: "Patient",
+    type: "membership_renewal",
+    title: "Membership Renewed",
+    message: `Your ${plan.name} membership has been renewed. New validity: ${startDate.toLocaleDateString("en-IN")} to ${expiryDate.toLocaleDateString("en-IN")}.`,
+    sendEmail: true,
+  });
 });
 
 /**
@@ -715,7 +736,7 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
       if (/\d/.test(name)) {
         return ApiResponse.error(res, "Name cannot contain numbers", 400);
       }
-      const autoPassword = (name.replace(/\s/g, "").slice(0, 4) + phone.slice(-4)) || "Patient@123";
+      const autoPassword = crypto.randomBytes(12).toString("base64url");
       patient = await Patient.create({
         name,
         phone,
@@ -834,6 +855,56 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
   );
 
   notify({ recipientId: patient._id, recipientModel: "Patient", type: "membership_renewal", title: "Membership Activated", message: `Your ${plan.name} membership is now active! Valid until ${expiryDate.toLocaleDateString("en-IN")}. Enjoy your benefits.`, sendEmail: true });
+});
+
+/**
+ * @desc    Get active subscriber counts + preview lists for all plans (bulk, avoids N+1)
+ * @route   GET /api/memberships/plans/subscriber-counts
+ * @access  Admin
+ *
+ * "Active" definition mirrors the hasMembership virtual:
+ *   membership.status === "active" AND membership.expiryDate > now
+ */
+export const getPlanSubscriberCounts = asyncHandler(async (req, res) => {
+  const now = new Date();
+
+  // One aggregation: group active subscribers by plan, collect preview list.
+  // $push collects all matches; we cap in JS because dental-clinic subscriber
+  // counts per plan are small and this avoids MongoDB version-specific $firstN.
+  const groups = await Patient.aggregate([
+    {
+      $match: {
+        "membership.status": "active",
+        "membership.expiryDate": { $gt: now },
+        "membership.plan": { $exists: true, $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: "$membership.plan",
+        count: { $sum: 1 },
+        previewRaw: { $push: { _id: "$_id", name: "$name" } },
+      },
+    },
+  ]);
+
+  // Shape into planId → { count, subscribers (≤10), hasMore, moreCount }
+  const subscriberCounts = {};
+  for (const g of groups) {
+    const all = g.previewRaw;
+    subscriberCounts[g._id.toString()] = {
+      count: g.count,
+      subscribers: all.slice(0, 10),
+      hasMore: all.length > 10,
+      moreCount: Math.max(0, all.length - 10),
+    };
+  }
+
+  ApiResponse.success(
+    res,
+    { subscriberCounts },
+    "Subscriber counts fetched successfully",
+  );
 });
 
 /**

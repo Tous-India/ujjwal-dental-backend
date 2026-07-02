@@ -10,6 +10,7 @@ import { generateInvoice } from "../billing/invoice.service.js";
 import SystemSettings from "../settings/settings.model.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
+import PDFDocument from "pdfkit";
 
 /**
  * PAYMENT CONTROLLER
@@ -19,6 +20,59 @@ import crypto from "crypto";
  * - Razorpay integration
  * - Refund processing
  */
+
+// ── Shared label maps (used by list and PDF export) ──────────────────────────
+const TYPE_LABELS = {
+  opd_fee: "OPD Fee",
+  consultation: "Consultation",
+  treatment: "Treatment",
+  test: "Test",
+  invoice_payment: "Invoice Payment",
+  advance: "Advance",
+  membership: "Membership",
+  refund: "Refund",
+  other: "Other",
+};
+
+const MODE_LABELS = {
+  cash: "Cash",
+  card: "Card",
+  upi: "UPI",
+  razorpay: "Razorpay",
+  netbanking: "Net Banking",
+  other: "Other",
+};
+
+/**
+ * Builds a MongoDB filter query from payment list params.
+ * Shared by getAllPayments and exportPaymentsPdf so filter logic never diverges.
+ */
+const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, to } = {}) => {
+  const query = {};
+
+  if (patient && mongoose.Types.ObjectId.isValid(patient)) {
+    query.patient = patient;
+  }
+  if (status) {
+    query.status = status;
+  }
+  if (paymentMode) {
+    query.paymentMode = paymentMode;
+  }
+  if (type) {
+    query.type = type;
+  }
+  if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
+    query.clinic = clinic;
+  }
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = new Date(from);
+    if (to) query.createdAt.$lte = new Date(to);
+  }
+
+  return query;
+};
 
 // ==================== PAYMENT CRUD ====================
 
@@ -30,39 +84,7 @@ import crypto from "crypto";
 export const getAllPayments = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, patient, status, paymentMode, type, clinic, from, to } = req.query;
 
-  // Build query
-  const query = {};
-
-  if (patient && mongoose.Types.ObjectId.isValid(patient)) {
-    query.patient = patient;
-  }
-
-  if (status) {
-    query.status = status;
-  }
-
-  if (paymentMode) {
-    query.paymentMode = paymentMode;
-  }
-
-  if (type) {
-    query.type = type;
-  }
-
-  if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
-    query.clinic = clinic;
-  }
-
-  // Date range filter
-  if (from || to) {
-    query.createdAt = {};
-    if (from) {
-      query.createdAt.$gte = new Date(from);
-    }
-    if (to) {
-      query.createdAt.$lte = new Date(to);
-    }
-  }
+  const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to });
 
   // Pagination
   const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -85,6 +107,273 @@ export const getAllPayments = asyncHandler(async (req, res) => {
     total,
     totalPages: Math.ceil(total / parseInt(limit)),
   });
+});
+
+/**
+ * @desc    Export filtered payments as PDF
+ * @route   GET /api/payments/export/pdf
+ * @access  Admin
+ *
+ * Layout
+ * ------
+ *  Paid tab     — Portrait  A4 (595.28 x 841.89 pt)
+ *                 7 columns, 40pt margins, 515pt usable, columns total 500pt
+ *  Refunded tab — Landscape A4 (841.89 x 595.28 pt)
+ *                 9 columns, 40pt margins, 762pt usable, columns total 762pt
+ *
+ * Why "Rs." instead of "₹"
+ * ------------------------
+ *  PDFKit's built-in fonts (Helvetica, Times-Roman, Courier) use WinAnsiEncoding
+ *  (Windows-1252). The Indian Rupee sign U+20B9 (₹) is NOT in that encoding —
+ *  it renders as an apostrophe glyph, corrupts the x-cursor, and causes the next
+ *  column's text to start at the wrong position (hence "AMOUNTMODE" header bleed
+ *  and "1Razorpay" / "20,000Cash" in data rows). "Rs." is ASCII-safe.
+ *
+ * Why column widths total 500pt (not 515pt)
+ * ------------------------------------------
+ *  Columns filling exactly 515pt (usable width) leave 0pt inter-column gap.
+ *  Any text that touches its right boundary bleeds into the next column.
+ *  500pt total leaves a 15pt right buffer AND 2pt cell padding is applied
+ *  per column so adjacent text never touches.
+ *
+ * Why explicit `y` variable instead of doc.y / moveDown
+ * -------------------------------------------------------
+ *  doc.text(t,x,y,{lineBreak:false}) updates doc.y to y+lineHeight after
+ *  every call.  When multiple doc.text calls share the same row (one per
+ *  column), doc.y drift accumulates.  doc.moveDown(n) then advances from
+ *  the drifted position, not the intended row bottom.  Using a standalone
+ *  `y` counter that advances by exactly ROW_H per row eliminates all drift.
+ */
+export const exportPaymentsPdf = asyncHandler(async (req, res) => {
+  const { patient, status, paymentMode, type, clinic, from, to } = req.query;
+
+  const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to });
+
+  const payments = await Payment.find(query)
+    .populate("patient", "name phone")
+    .populate("invoice", "invoiceNumber")
+    .sort({ createdAt: -1 })
+    .limit(5000);
+
+  const isRefunded = status === "refunded";
+  const tabLabel   = isRefunded ? "Refunded" : "Paid";
+
+  // ── Logo resolution (dynamic import — no new top-level imports needed) ─────
+  const { fileURLToPath } = await import("url");
+  const { dirname, resolve } = await import("path");
+  const { existsSync }  = await import("fs");
+  const __dir   = dirname(fileURLToPath(import.meta.url));
+  // Controller: backend/src/modules/payments/ → project root: 4 levels up
+  const logoPath = resolve(__dir, "../../../../frontend/public/ujjwal-dental-logo.png");
+  const hasLogo  = existsSync(logoPath);
+
+  // ── Locale-independent date formatter: "01 Jul 2026" ──────────────────────
+  const MTH = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const fmtDate = (d) => {
+    if (!d) return "-";
+    const dt = new Date(d);
+    return `${String(dt.getDate()).padStart(2,"0")} ${MTH[dt.getMonth()]} ${dt.getFullYear()}`;
+  };
+
+  // ── Page dimensions ────────────────────────────────────────────────────────
+  const PAGE_W = isRefunded ? 841.89 : 595.28;
+  const PAGE_H = isRefunded ? 595.28 : 841.89;
+  const MARGIN  = 40;
+  const USABLE  = PAGE_W - MARGIN * 2; // 515.28pt portrait / 761.89pt landscape
+
+  const doc = new PDFDocument({ size: [PAGE_W, PAGE_H], margin: MARGIN, autoFirstPage: true });
+
+  const today    = fmtDate(new Date());
+  const filename = `payment-history-${tabLabel.toLowerCase()}-${today.replace(/ /g, "-")}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  doc.pipe(res);
+
+  // ── Brand colours (frontend/src/main.jsx MUI theme) ───────────────────────
+  const NAVY   = "#0D1B4A"; // secondary.main — clinic name, titles, summary text
+  const ORANGE = "#F57C00"; // primary.main   — accent (unused in table body)
+
+  // ── Column definitions ─────────────────────────────────────────────────────
+  //
+  //  Paid — Portrait, 515pt usable, columns total 500pt:
+  //    85 + 65 + 95 + 65 + 75 + 55 + 60 = 500
+  //
+  //  Refunded — Landscape, 762pt usable, columns total 762pt:
+  //    82 + 65 + 100 + 68 + 87 + 57 + 60 + 80 + 163 = 762
+  //
+  //  "AMT (Rs.)" header: 9 chars ≈ 48pt at 10pt Helvetica-Bold → fits in 55pt ✓
+  //  "AMOUNT (Rs.)" at 12 chars ≈ 66pt → OVERFLOWS 55pt → this caused the bleed.
+  //
+  //  x positions assigned sequentially below.
+
+  const paidCols = [
+    { header: "RECEIPT NO.",  key: "receipt",      align: "left",  w: 85 },
+    { header: "DATE",         key: "date",         align: "left",  w: 65 },
+    { header: "PATIENT",      key: "patient",      align: "left",  w: 95 },
+    { header: "INVOICE NO.",  key: "invoice",      align: "left",  w: 65 },
+    { header: "SERVICE",      key: "service",      align: "left",  w: 75 },
+    { header: "AMT (Rs.)",    key: "amount",       align: "right", w: 55 },
+    { header: "MODE",         key: "mode",         align: "left",  w: 60 },
+  ];
+
+  const refundedCols = [
+    { header: "RECEIPT NO.",  key: "receipt",      align: "left",  w: 82  },
+    { header: "DATE",         key: "date",         align: "left",  w: 65  },
+    { header: "PATIENT",      key: "patient",      align: "left",  w: 100 },
+    { header: "INVOICE NO.",  key: "invoice",      align: "left",  w: 68  },
+    { header: "SERVICE",      key: "service",      align: "left",  w: 87  },
+    { header: "AMT (Rs.)",    key: "amount",       align: "right", w: 57  },
+    { header: "MODE",         key: "mode",         align: "left",  w: 60  },
+    { header: "REFUNDED ON",  key: "refundedAt",   align: "left",  w: 80  },
+    { header: "REASON",       key: "refundReason", align: "left",  w: 163 },
+  ];
+
+  const cols = isRefunded ? refundedCols : paidCols;
+
+  // Sequential x assignment
+  let xAcc = MARGIN;
+  for (const col of cols) { col.x = xAcc; xAcc += col.w; }
+
+  const ROW_H  = 26;           // data row height (pt) — 9pt font; text at rowY+(ROW_H-9)/2 = rowY+8.5 → rowY+8
+  const HDR_H  = 26;           // column header row height (pt)
+  const PAD    = 6;            // cell padding: left-pad for left-aligned, right-pad for right-aligned
+  const BOTTOM = PAGE_H - 55; // page-break threshold
+
+  // ── Cell text position helpers ─────────────────────────────────────────────
+  //  Left-aligned:  text starts at col.x+PAD, width = col.w-PAD
+  //  Right-aligned: text ends   at col.x+col.w-PAD (PAD gap before next column)
+  const cellX = (col) => col.align === "right" ? col.x        : col.x + PAD;
+  const cellW = (col) => col.w - PAD;
+
+  // ── Column header renderer (called on every page) ──────────────────────────
+  const drawHeaders = (y) => {
+    // Light indigo pastel background — softer than dark navy, still clearly distinct from data rows
+    doc.rect(MARGIN, y, USABLE, HDR_H).fill("#E8EAF6");
+    // Dark indigo text — 8pt keeps headers subordinate to 12pt body data
+    doc.fillColor("#3730A3").fontSize(8).font("Helvetica-Bold");
+    for (const col of cols) {
+      doc.text(col.header, cellX(col), y + 9, {  // (HDR_H 26 - font 8) / 2 = 9 → vertically centred
+        width:     cellW(col),
+        align:     col.align,
+        lineBreak: false,
+        ellipsis:  true,   // ← prevents any header text from bleeding into adjacent column
+      });
+    }
+    return y + HDR_H;
+  };
+
+  // ── Page branding header (first page only) ─────────────────────────────────
+  let y = MARGIN;
+
+  if (hasLogo) {
+    // Logo 55x55pt at top-left, clinic text to its right
+    doc.image(logoPath, MARGIN, y, { width: 55, height: 55 });
+    const txtX = MARGIN + 65; // 55pt logo + 10pt gap
+    const txtW = USABLE - 65;
+    doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
+    doc.text("Ujjwal Dental Clinic", txtX, y + 2, { width: txtW, lineBreak: false });
+    doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
+    doc.text("A unit of Healing Fairy Health Care Pvt. Ltd.", txtX, y + 24, { width: txtW, lineBreak: false });
+    y = MARGIN + 62; // below logo (55pt) + 7pt gap
+  } else {
+    // Centred fallback when no logo file is found
+    doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
+    doc.text("Ujjwal Dental Clinic", MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+    y += 26;
+    doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
+    doc.text("A unit of Healing Fairy Health Care Pvt. Ltd.", MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+    y += 16;
+  }
+
+  // Thin horizontal divider below header block
+  doc.strokeColor("#D1D5DB").lineWidth(0.8).moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).stroke();
+  y += 10;
+
+  // Report title — 13pt bold, centered, navy
+  doc.fillColor(NAVY).fontSize(13).font("Helvetica-Bold");
+  doc.text(`Payment History - ${tabLabel}`, MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+  y += 20;
+
+  // Filter / export info — 9pt, gray, centered
+  const filterParts = [];
+  if (from || to) filterParts.push(`Date: ${fmtDate(from)} to ${fmtDate(to)}`);
+  if (paymentMode) filterParts.push(`Mode: ${MODE_LABELS[paymentMode] || paymentMode}`);
+  if (type)        filterParts.push(`Type: ${TYPE_LABELS[type] || type}`);
+  filterParts.push(`Exported: ${today}`);
+  doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
+  doc.text(filterParts.join("   |   "), MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+  y += 14;
+
+  // Summary stats — 10pt bold, centered, navy
+  const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0);
+  doc.fillColor(NAVY).fontSize(10).font("Helvetica-Bold");
+  doc.text(
+    `Total Records: ${payments.length}   |   Total Amount: Rs. ${totalAmount.toLocaleString("en-IN")}`,
+    MARGIN, y, { align: "center", width: USABLE, lineBreak: false }
+  );
+  y += 18;
+
+  // ── Table ──────────────────────────────────────────────────────────────────
+  y = drawHeaders(y);
+
+  for (let i = 0; i < payments.length; i++) {
+    const pmt = payments[i];
+
+    // Page break — new page, reset y, redraw column headers
+    if (y + ROW_H > BOTTOM) {
+      doc.addPage();
+      y = MARGIN;
+      y = drawHeaders(y);
+    }
+
+    const rowY = y;
+
+    // Alternating row background: white / very light lavender
+    doc.rect(MARGIN, rowY, USABLE, ROW_H).fill(i % 2 === 0 ? "#FFFFFF" : "#F8F8FF");
+
+    // Row values — plain numbers for Amount column (Rs. only in header + summary)
+    const vals = {
+      receipt:      pmt.paymentNumber || "-",
+      date:         fmtDate(pmt.paidAt || pmt.createdAt),
+      patient:      pmt.patient?.name || "-",
+      invoice:      pmt.invoice?.invoiceNumber || "-",
+      service:      pmt.treatmentName || TYPE_LABELS[pmt.type] || pmt.type || "-",
+      amount:       (pmt.amount || 0).toLocaleString("en-IN"),
+      mode:         MODE_LABELS[pmt.paymentMode] || pmt.paymentMode || "-",
+      refundedAt:   fmtDate(pmt.refund?.refundedAt),
+      refundReason: pmt.refund?.reason || "-",
+    };
+
+    // Draw each cell at explicit (cellX, rowY+8) — (ROW_H-fontSize)/2 = (26-9)/2 = 8.5 → 8 → vertically centred
+    doc.fillColor("#1a1a2e").fontSize(9).font("Helvetica");
+    for (const col of cols) {
+      doc.text(vals[col.key] ?? "-", cellX(col), rowY + 8, {
+        width:     cellW(col),
+        align:     col.align,
+        lineBreak: false,
+        ellipsis:  true,
+      });
+    }
+
+    // Thin row bottom rule
+    doc.strokeColor("#E5E7EB").lineWidth(0.5)
+       .moveTo(MARGIN, rowY + ROW_H)
+       .lineTo(MARGIN + USABLE, rowY + ROW_H)
+       .stroke();
+
+    y = rowY + ROW_H; // explicit tracker — never use doc.y or moveDown
+  }
+
+  // ── Footer — pinned to bottom of last page ─────────────────────────────────
+  // y must be ≤ PAGE_H - MARGIN (= PDFKit's usable bottom boundary).
+  // PAGE_H - 28 exceeded that boundary and caused PDFKit to auto-add a blank page.
+  doc.fillColor("#9ca3af").fontSize(8).font("Helvetica");
+  doc.text(
+    `Generated by Ujjwal Dental Clinic admin panel - ${today}`,
+    MARGIN, PAGE_H - MARGIN - 10, { align: "center", width: USABLE, lineBreak: false }
+  );
+
+  doc.end();
 });
 
 /**
@@ -168,7 +457,7 @@ export const createPayment = asyncHandler(async (req, res) => {
       return ApiResponse.error(res, "Cannot record payment for cancelled invoice", 400);
     }
 
-    if (invoiceDoc.paymentStatus === "paid") {
+    if (invoiceDoc.paymentStatus === "paid" || invoiceDoc.status === "paid") {
       return ApiResponse.error(res, "Invoice is already fully paid", 400);
     }
 
@@ -788,15 +1077,19 @@ export const processRefund = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Payment not found", 404);
   }
 
-  if (payment.status !== "paid") {
-    return ApiResponse.error(res, "Can only refund paid payments", 400);
-  }
-
   if (payment.status === "refunded") {
     return ApiResponse.error(res, "Payment is already refunded", 400);
   }
 
+  if (payment.status !== "paid") {
+    return ApiResponse.error(res, "Can only refund paid payments", 400);
+  }
+
   const refundAmount = amount || payment.amount;
+
+  if (refundAmount <= 0) {
+    return ApiResponse.error(res, "Refund amount must be greater than 0", 400);
+  }
 
   if (refundAmount > payment.amount) {
     return ApiResponse.error(res, "Refund amount cannot exceed payment amount", 400);
@@ -816,14 +1109,14 @@ export const processRefund = asyncHandler(async (req, res) => {
         notes: { reason: reason || "Refund requested" },
       });
 
-      await payment.processRefund(req.user?._id, reason, refund.id);
+      await payment.processRefund(req.user?._id, reason, refund.id, refundAmount);
     } catch (error) {
       console.error("Razorpay refund error:", error);
       return ApiResponse.error(res, `Razorpay refund failed: ${error.message}`, 500);
     }
   } else {
     // For offline payments, just update the status
-    await payment.processRefund(req.user?._id, reason);
+    await payment.processRefund(req.user?._id, reason, undefined, refundAmount);
   }
 
   // Update invoice if linked
@@ -1198,7 +1491,7 @@ export const collectPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Cannot collect payment on a cancelled invoice", 400);
   }
 
-  if (invoice.paymentStatus === "paid") {
+  if (invoice.paymentStatus === "paid" || invoice.status === "paid") {
     return ApiResponse.error(res, "Invoice is already fully paid", 400);
   }
 
@@ -1259,13 +1552,17 @@ export const collectPayment = asyncHandler(async (req, res) => {
 // ==================== PATIENT PENDING PAYMENT (RAZORPAY) ====================
 
 /**
- * @desc    Create a Razorpay order for patient's pending invoice balance
+ * @desc    Create a Razorpay order for patient's pending invoice balance.
+ *          When invoiceId is provided the order is scoped to that invoice only;
+ *          otherwise the amount is validated against the patient's total outstanding
+ *          balance and settled FIFO in verifyPendingPayment (existing behaviour).
  * @route   POST /api/payments/patient/create-pending-order
  * @access  Patient
  */
 export const createPendingOrder = asyncHandler(async (req, res) => {
   const patientId = req.patient._id;
   const amount = Number(req.body.amount);
+  const { invoiceId } = req.body;
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return ApiResponse.error(res, "Amount must be greater than 0", 400);
@@ -1275,19 +1572,38 @@ export const createPendingOrder = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Razorpay is not configured", 500);
   }
 
-  // Sum of all outstanding balances across unpaid/partially-paid invoices
-  const pendingInvoices = await Invoice.find({
-    patient: patientId,
-    paymentStatus: { $in: ["unpaid", "partial"] },
-  });
+  let totalPending;
 
-  const totalPending = pendingInvoices.reduce(
-    (sum, inv) => sum + (inv.balanceDue || 0),
-    0
-  );
-
-  if (totalPending <= 0) {
-    return ApiResponse.error(res, "No pending amount to pay", 400);
+  if (invoiceId) {
+    // Per-invoice flow: scope the order to a single invoice
+    if (!mongoose.Types.ObjectId.isValid(invoiceId)) {
+      return ApiResponse.error(res, "Invalid invoice ID", 400);
+    }
+    const invoice = await Invoice.findById(invoiceId);
+    // Identical 404 for missing or wrong-patient (IDOR protection)
+    if (!invoice || invoice.patient.toString() !== patientId.toString()) {
+      return ApiResponse.error(res, "Invoice not found", 404);
+    }
+    if (invoice.paymentStatus === "paid") {
+      return ApiResponse.error(res, "This invoice is already fully paid", 400);
+    }
+    if (!invoice.balanceDue || invoice.balanceDue <= 0) {
+      return ApiResponse.error(res, "No outstanding balance on this invoice", 400);
+    }
+    totalPending = invoice.balanceDue;
+  } else {
+    // Total-balance flow: sum across all pending invoices (existing behaviour)
+    const pendingInvoices = await Invoice.find({
+      patient: patientId,
+      paymentStatus: { $in: ["unpaid", "partial"] },
+    });
+    totalPending = pendingInvoices.reduce(
+      (sum, inv) => sum + (inv.balanceDue || 0),
+      0
+    );
+    if (totalPending <= 0) {
+      return ApiResponse.error(res, "No pending amount to pay", 400);
+    }
   }
 
   if (amount > totalPending + 0.01) {
@@ -1304,13 +1620,17 @@ export const createPendingOrder = asyncHandler(async (req, res) => {
     key_secret: process.env.RAZORPAY_KEY_SECRET,
   });
 
+  // Embed invoiceId in order notes so verifyPendingPayment can recover the scope
+  const notes = { patientId: patientId.toString(), type: "pending_payment" };
+  if (invoiceId) notes.invoiceId = invoiceId.toString();
+
   let order;
   try {
     order = await razorpay.orders.create({
       amount: Math.round(amount * 100),
       currency: "INR",
       receipt: `pending_${patientId.toString().slice(-8)}_${Date.now()}`,
-      notes: { patientId: patientId.toString(), type: "pending_payment" },
+      notes,
     });
   } catch (err) {
     console.error("[PendingOrder] Razorpay order creation failed:", err.message);
@@ -1325,12 +1645,16 @@ export const createPendingOrder = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Verify Razorpay payment and settle against oldest unpaid invoices
+ * @desc    Verify Razorpay payment and settle against invoices.
+ *          When the order notes contain an invoiceId (set by createPendingOrder) the
+ *          payment is applied to that specific invoice only.  Otherwise the
+ *          Razorpay-verified amount is distributed FIFO across all pending invoices
+ *          (existing behaviour — unchanged).
  * @route   POST /api/payments/patient/verify-pending-payment
  * @access  Patient
  */
 export const verifyPendingPayment = asyncHandler(async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount } = req.body;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
   const patientId = req.patient._id;
 
   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -1351,49 +1675,114 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid payment signature", 400);
   }
 
-  // Fetch outstanding invoices, oldest first
-  const invoices = await Invoice.find({
-    patient: patientId,
-    paymentStatus: { $in: ["unpaid", "partial"] },
-  }).sort({ invoiceDate: 1, createdAt: 1 });
-
-  // Distribute the paid amount across invoices starting with the oldest
-  let remaining = Number(amount);
-  for (const invoice of invoices) {
-    if (remaining <= 0) break;
-    const balanceDue = invoice.balanceDue || Math.max(0, invoice.grandTotal - (invoice.amountPaid || 0));
-    const applyAmount = Math.min(remaining, balanceDue);
-    if (applyAmount <= 0) continue;
-
-    invoice.amountPaid = (invoice.amountPaid || 0) + applyAmount;
-    invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
-
-    if (invoice.amountPaid >= invoice.grandTotal) {
-      invoice.paymentStatus = "paid";
-      invoice.status = "paid";
-    } else {
-      invoice.paymentStatus = "partial";
-      invoice.status = "partially_paid";
-    }
-
-    await invoice.save();
-    remaining -= applyAmount;
+  // Resolve the authoritative captured amount from Razorpay — do NOT trust
+  // req.body.amount for settlement. The signature only covers order_id|payment_id,
+  // not the amount, so a patient could supply a different figure and over- or
+  // under-settle their invoices. Fetch the order and use order.amount_paid (paise).
+  // Also recover the optional invoiceId embedded in order.notes by createPendingOrder.
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    return ApiResponse.error(res, "Razorpay is not configured", 500);
+  }
+  const Razorpay = (await import("razorpay")).default;
+  const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+  let verifiedAmount;
+  let scopedInvoiceId;
+  try {
+    const order = await razorpay.orders.fetch(razorpay_order_id);
+    verifiedAmount = Number(order.amount_paid) / 100;
+    scopedInvoiceId = order.notes?.invoiceId || null;
+  } catch (err) {
+    console.error("[VerifyPendingPayment] Could not fetch Razorpay order:", err.message);
+    return ApiResponse.error(res, "Could not verify payment amount", 502);
+  }
+  if (!verifiedAmount || verifiedAmount <= 0) {
+    return ApiResponse.error(res, "Payment has not been captured yet", 400);
   }
 
-  // Create a consolidated payment record
-  const payment = new Payment({
-    patient: patientId,
-    amount: Number(amount),
-    paymentMode: "razorpay",
-    type: "invoice_payment",
-    status: "paid",
-    paidAt: new Date(),
-    razorpayOrderId: razorpay_order_id,
-    razorpayPaymentId: razorpay_payment_id,
-    razorpaySignature: razorpay_signature,
-    notes: "Pending amount payment via Razorpay",
-  });
-  await payment.save();
+  if (scopedInvoiceId) {
+    // ── Per-invoice settlement ──────────────────────────────────────────────
+    if (!mongoose.Types.ObjectId.isValid(scopedInvoiceId)) {
+      return ApiResponse.error(res, "Invalid invoice reference in payment order", 400);
+    }
+    const invoice = await Invoice.findOne({
+      _id: scopedInvoiceId,
+      patient: patientId,  // IDOR check
+    });
+    if (!invoice) {
+      return ApiResponse.error(res, "Invoice not found", 404);
+    }
+    const previousAmountPaid = invoice.amountPaid || 0;
+    invoice.amountPaid = previousAmountPaid + verifiedAmount;
+    // pre-save hook calls calculateTotals() which updates balanceDue / paymentStatus / status
+    await invoice.save();
+
+    const payment = new Payment({
+      patient: patientId,
+      amount: verifiedAmount,
+      paymentMode: "razorpay",
+      type: "invoice_payment",
+      status: "paid",
+      paidAt: new Date(),
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpaySignature: razorpay_signature,
+      settledInvoices: [
+        {
+          invoiceId: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          appliedAmount: verifiedAmount,
+          previousAmountPaid,
+        },
+      ],
+      notes: `Invoice payment via Razorpay — ${invoice.invoiceNumber}`,
+    });
+    await payment.save();
+  } else {
+    // ── Total-balance FIFO settlement (existing behaviour — unchanged) ───────
+    const invoices = await Invoice.find({
+      patient: patientId,
+      paymentStatus: { $in: ["unpaid", "partial"] },
+    }).sort({ invoiceDate: 1, createdAt: 1 });
+
+    let remaining = verifiedAmount;
+    for (const invoice of invoices) {
+      if (remaining <= 0) break;
+      const balanceDue = invoice.balanceDue || Math.max(0, invoice.grandTotal - (invoice.amountPaid || 0));
+      const applyAmount = Math.min(remaining, balanceDue);
+      if (applyAmount <= 0) continue;
+
+      invoice.amountPaid = (invoice.amountPaid || 0) + applyAmount;
+      invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
+
+      if (invoice.amountPaid >= invoice.grandTotal) {
+        invoice.paymentStatus = "paid";
+        invoice.status = "paid";
+      } else {
+        invoice.paymentStatus = "partial";
+        invoice.status = "partially_paid";
+      }
+
+      await invoice.save();
+      remaining -= applyAmount;
+    }
+
+    const payment = new Payment({
+      patient: patientId,
+      amount: verifiedAmount,
+      paymentMode: "razorpay",
+      type: "invoice_payment",
+      status: "paid",
+      paidAt: new Date(),
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpaySignature: razorpay_signature,
+      notes: "Pending amount payment via Razorpay",
+    });
+    await payment.save();
+  }
 
   return ApiResponse.success(res, { success: true }, "Payment successful");
 });

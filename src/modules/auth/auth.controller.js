@@ -484,26 +484,46 @@ export const verifyOtp = asyncHandler(async (req, res) => {
  * @access  Public
  */
 export const patientLoginPassword = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const { identifier, password } = req.body;
 
-  if (!email || !password) {
-    return ApiResponse.error(res, "Please provide email and password", 400);
+  if (!identifier || !password) {
+    return ApiResponse.error(
+      res,
+      "Please provide your phone number or email, and password",
+      400
+    );
   }
 
-  // Find patient by email (include password for comparison)
-  const patient = await Patient.findOne({ email: email.toLowerCase() }).select("+password");
+  const trimmed = identifier.trim();
+  const isPhone = /^[6-9]\d{9}$/.test(trimmed);
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+
+  if (!isPhone && !isEmail) {
+    return ApiResponse.error(
+      res,
+      "Please enter a valid 10-digit phone number or email address",
+      400
+    );
+  }
+
+  // Find patient by phone or email — exact match only (no partial/regex)
+  const query = isPhone
+    ? { phone: trimmed }
+    : { email: trimmed.toLowerCase() };
+
+  const patient = await Patient.findOne(query).select("+password");
 
   // Use a single generic message for not-found / wrong-password
   // to avoid leaking whether an account exists (account enumeration).
   if (!patient) {
-    return ApiResponse.error(res, "Invalid email or password", 401);
+    return ApiResponse.error(res, "Invalid credentials", 401);
   }
 
   // Check if patient is active. Return the same generic message as other
   // failures (no account enumeration); record the real reason server-side only.
   if (!patient.isActive) {
     console.warn(`[Patient Login] Blocked - deactivated account (id: ${patient._id})`);
-    return ApiResponse.error(res, "Invalid email or password", 401);
+    return ApiResponse.error(res, "Invalid credentials", 401);
   }
 
   // Check if patient has a password set
@@ -519,7 +539,7 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
   const isPasswordMatch = await patient.comparePassword(password);
 
   if (!isPasswordMatch) {
-    return ApiResponse.error(res, "Invalid email or password", 401);
+    return ApiResponse.error(res, "Invalid credentials", 401);
   }
 
   // Generate token

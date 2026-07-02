@@ -124,6 +124,7 @@ const paymentSchema = new mongoose.Schema(
 
     // === Refund details ===
     refund: {
+      amount: Number,
       refundedAt: Date,
       refundedBy: {
         type: mongoose.Schema.Types.ObjectId,
@@ -244,9 +245,11 @@ paymentSchema.methods.processRefund = function (
   userId,
   reason,
   razorpayRefundId,
+  amount,
 ) {
   this.status = "refunded";
   this.refund = {
+    amount: amount ?? this.amount,
     refundedAt: new Date(),
     refundedBy: userId,
     reason,
