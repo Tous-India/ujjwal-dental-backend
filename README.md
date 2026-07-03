@@ -2,6 +2,34 @@
 
 Complete backend API for the Ujjwal Dental Clinic Management System.
 
+## Production
+
+| | URL |
+|---|---|
+| **Backend (Vercel)** | `https://ujjwal-dental-backend-zni7.vercel.app` |
+| **Frontend (Vercel)** | `https://ujjwaldentalplanet.com` |
+
+**Health check:** `GET /health` → `{"success":true,"message":"Server is running"}`
+
+**Vercel entry point:** `backend/api/index.js` — imports `app.js`, connects MongoDB once (cached across Vercel invocations), exports `handler`.
+
+**Required Vercel environment variables (backend project):**
+```
+MONGODB_URI=<Atlas connection string>
+JWT_SECRET=<your secret>
+NODE_ENV=production
+FRONTEND_URL=https://ujjwaldentalplanet.com
+CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET
+RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET
+EMAIL_HOST / EMAIL_PORT / EMAIL_USER / EMAIL_PASSWORD / EMAIL_FROM
+```
+
+**Required Vercel environment variable (frontend project):**
+```
+VITE_API_URL=https://ujjwal-dental-backend-zni7.vercel.app/api
+```
+The frontend `axios.js` falls back to `http://localhost:5000/api` if this is missing — the site will fail in production without it.
+
 ## Tech Stack
 
 - **Runtime:** Node.js
@@ -205,20 +233,27 @@ bcrypt (12 rounds) by the Patient model's pre-save hook before storage.
 
 ## API Endpoints
 
-Base URL: `http://localhost:5000/api`
+Base URL (production): `https://ujjwal-dental-backend-zni7.vercel.app/api`
+Base URL (local dev): `http://localhost:5000/api`
 
 ### Auth (`/api/auth`)
 
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
-| POST | `/login` | Public | Admin login with email/password |
-| POST | `/patient/login` | Public | Patient login - Request OTP via email |
+| POST | `/login` | Public | Admin login with `{email, password}` |
+| POST | `/patient/login` | Public | Patient OTP login — accepts `{email}`, sends 6-digit OTP |
+| POST | `/patient/login-password` | Public | Patient password login — accepts `{identifier, password}` where identifier is phone (10-digit) or email; `password` defaults to `"account123"` for admin-created accounts |
 | POST | `/patient/verify-otp` | Public | Verify patient OTP and get JWT |
 | POST | `/patient/resend-otp` | Public | Resend OTP to email |
-| POST | `/refresh-token` | Auth | Refresh access token |
-| POST | `/logout` | Auth | Logout user |
-| POST | `/forgot-password` | Public | Request password reset |
+| POST | `/patient/logout` | Patient | Logout patient |
+| POST | `/patient/change-password` | Patient | Change patient password |
+| GET | `/patient/me` | Patient | Get current patient profile |
+| GET | `/me` | Admin | Get current admin profile |
+| POST | `/refresh-token` | Public | Refresh access token |
+| POST | `/logout` | Admin | Logout admin |
+| POST | `/forgot-password` | Public | Request password reset (works for both admin and patient) |
 | POST | `/reset-password` | Public | Reset password with token |
+| POST | `/change-password` | Admin | Change password when logged in |
 
 ### Users (`/api/users`)
 
@@ -596,6 +631,15 @@ Base URL: `http://localhost:5000/api`
 
 **Why invoice-derived, not Payment collection:** OPD fee payments recorded via `PATCH /billing/invoices/:id/payment` update `invoice.amountPaid` only — no Payment document is created. The Payment collection only has records from the `POST /payments/admin/record-payment` path. The invoice-based approach covers both paths.
 
+### [2026-07-03] Production health check — all routes verified live
+All 15 protected API route groups return HTTP 401 (auth guard active, routes registered). Public routes:
+- `GET /api/memberships/plans` → 200 (public catalog for patient portal)
+- `GET /api/clinics` → 200 (public, used for appointment booking)
+- `GET /api/cms/treatments` → 200 (empty — no treatment pages published yet)
+- `POST /api/enquiries` → 201 (public — website lead submissions)
+
+Patient password login (`POST /api/auth/patient/login-password`) confirmed working: returns 401 "Invalid credentials" for unknown identifiers (no account enumeration).
+
 ### [2026-07-02] Membership Notifications on Assign & Renew
 **File:** `membership.controller.js`
 
@@ -787,12 +831,18 @@ Follow this order to test APIs properly (dependencies flow top to bottom):
 An admin user is created locally by the seed script (development only). Credentials are not
 documented here — use your local seed configuration and change the password after first login.
 
-**Patient Login:**
-- Email-based OTP authentication (passwordless)
-- Enter patient's email address
-- Receive 6-digit OTP via email
-- OTP expires in 10 minutes
-- Can request new OTP if needed
+**Patient Login (two methods):**
+
+*OTP login (passwordless):*
+- POST `/api/auth/patient/login` with `{email}`
+- Receive 6-digit OTP via email, expires in 10 minutes
+- POST `/api/auth/patient/verify-otp` with `{email, otp}`
+
+*Password login:*
+- POST `/api/auth/patient/login-password` with `{identifier, password}`
+- `identifier` = 10-digit phone number OR email address
+- Default password for admin-created accounts: **`account123`**
+- Patients created via membership self-purchase get a random cryptographic password emailed at account creation
 
 ---
 
