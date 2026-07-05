@@ -765,3 +765,85 @@ export const getPatientProfile = asyncHandler(async (req, res) => {
     "Patient profile fetched"
   );
 });
+
+/**
+ * @desc    Return active treatment plans with outstanding invoices for a patient
+ * @route   GET /api/patients/:id/active-context
+ * @access  Admin
+ */
+export const getPatientActiveContext = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
+  // Get all non-cancelled treatment appointments for this patient
+  const treatmentAppts = await Appointment.find({
+    patient: id,
+    visitType: "treatment",
+    status: { $ne: "cancelled" },
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (!treatmentAppts.length) {
+    return ApiResponse.success(res, { activeTreatments: [] });
+  }
+
+  // Get all outstanding invoices for this patient (any link — direct or manual)
+  const outstandingInvoices = await Invoice.find({
+    patient: id,
+    paymentStatus: { $in: ["unpaid", "partial"] },
+  })
+    .select("invoiceNumber grandTotal amountPaid balanceDue paymentStatus appointment createdAt")
+    .lean();
+
+  if (!outstandingInvoices.length) {
+    return ApiResponse.success(res, { activeTreatments: [] });
+  }
+
+  // For each treatment appointment, find its best matching outstanding invoice:
+  //   1. Direct: invoice._id === appointment.invoice (appointment stores the ref)
+  //   2. Reverse: invoice.appointment === appointment._id (invoice stores the ref)
+  //   3. Fallback: any outstanding invoice for the patient (used when both refs are missing/ghost)
+  const usedInvoiceIds = new Set();
+  const enriched = await Promise.all(
+    treatmentAppts.map(async (t) => {
+      const apptIdStr = t._id.toString();
+      const apptInvStr = t.invoice?.toString();
+
+      let invoice =
+        outstandingInvoices.find((inv) => apptInvStr && inv._id.toString() === apptInvStr) ||
+        outstandingInvoices.find((inv) => inv.appointment?.toString() === apptIdStr) ||
+        outstandingInvoices.find((inv) => !usedInvoiceIds.has(inv._id.toString()));
+
+      if (!invoice) return null;
+      usedInvoiceIds.add(invoice._id.toString());
+
+      const sessionsCount = await Appointment.countDocuments({
+        parentAppointment: t._id,
+        status: { $ne: "cancelled" },
+      });
+
+      return {
+        parentAppointmentId: t._id,
+        treatmentName: t.treatmentName || t.customTreatmentName || "Treatment",
+        parentDate: t.date,
+        parentTimeSlot: t.timeSlot,
+        invoice: {
+          _id: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          grandTotal: invoice.grandTotal,
+          amountPaid: invoice.amountPaid,
+          balanceDue: invoice.balanceDue,
+          paymentStatus: invoice.paymentStatus,
+        },
+        sessionsBooked: sessionsCount,
+        nextSessionNumber: sessionsCount + 1,
+      };
+    }),
+  );
+
+  return ApiResponse.success(res, { activeTreatments: enriched.filter(Boolean) });
+});
