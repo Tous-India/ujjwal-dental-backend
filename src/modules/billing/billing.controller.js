@@ -147,6 +147,15 @@ export const getInvoiceByNumber = asyncHandler(async (req, res) => {
 export const createInvoice = asyncHandler(async (req, res) => {
   const { patient, clinic, appointment, items, discount, notes, terms, amountPaid, paymentMethod } = req.body;
 
+  const hasOpdItem = items?.some((item) => item.itemType === "opd_fee");
+  if (hasOpdItem) {
+    return ApiResponse.error(
+      res,
+      "OPD Fee invoices must be created through appointment booking, not manually.",
+      400,
+    );
+  }
+
   // Validation
   if (!patient || !clinic || !items || items.length === 0) {
     return ApiResponse.error(res, "Patient, clinic and at least one item are required", 400);
