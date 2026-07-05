@@ -80,8 +80,29 @@ const appointmentSchema = new mongoose.Schema(
     // Defaults to "opd" so existing/patient-booked appointments behave as before.
     visitType: {
       type: String,
-      enum: ["opd", "treatment"],
+      enum: ["opd", "treatment", "treatment_session"],
       default: "opd",
+    },
+
+    // For treatment_session appointments: ref to the parent treatment appointment.
+    parentAppointment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Appointment",
+      default: null,
+      validate: {
+        validator: function (value) {
+          if (this.visitType === "treatment_session") return !!value;
+          return true;
+        },
+        message: "parentAppointment is required for treatment_session appointments",
+      },
+    },
+
+    // Session number within a treatment plan (1-based). Null for opd/treatment.
+    sessionNumber: {
+      type: Number,
+      default: null,
+      min: 1,
     },
 
     // Treatment (catalog) for treatment visits — nullable for OPD visits.
@@ -245,6 +266,9 @@ const appointmentSchema = new mongoose.Schema(
 // Compound index for fast per-slot lookups. NOT unique: each 30-minute slot
 // may hold up to SLOT_CAPACITY bookings (enforced in the controller).
 appointmentSchema.index({ clinic: 1, date: 1, timeSlot: 1 });
+
+// Fast session lookup and sessionNumber auto-calc.
+appointmentSchema.index({ parentAppointment: 1, sessionNumber: 1 });
 
 // Index for finding appointments by patient
 appointmentSchema.index({ patient: 1, date: -1 });
