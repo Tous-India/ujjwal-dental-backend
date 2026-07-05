@@ -100,7 +100,7 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) 
  * @access  Admin
  */
 export const getAllAppointments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType } = req.query;
+  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType, search } = req.query;
 
   // 1. Build filter query from params
   const filter = {};
@@ -129,6 +129,17 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     end.setHours(23, 59, 59, 999);
 
     filter.date = { $gte: start, $lte: end };
+  }
+
+  if (search && search.trim()) {
+    const searchRegex = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const matchingPatients = await Patient.find({
+      $or: [{ name: searchRegex }, { phone: searchRegex }],
+    }).select("_id").lean();
+    if (matchingPatients.length === 0) {
+      return ApiResponse.paginated(res, [], { page: Number(page), limit: Number(limit), total: 0, totalPages: 0 }, "Appointments fetched");
+    }
+    filter.patient = { $in: matchingPatients.map((p) => p._id) };
   }
 
   // 2. Query appointments with pagination
