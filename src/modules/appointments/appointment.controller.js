@@ -11,6 +11,7 @@ import { generateInvoice } from "../billing/invoice.service.js";
 import Invoice from "../billing/invoice.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
+import dispatchBookingNotifications from "../../utils/dispatchBookingNotifications.js";
 
 /**
  * APPOINTMENT CONTROLLER
@@ -627,6 +628,8 @@ export const createAppointment = asyncHandler(async (req, res) => {
      RESPONSE
   ======================== */
 
+  dispatchBookingNotifications(appointment._id);
+
   return ApiResponse.created(
     res,
     {
@@ -864,34 +867,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     console.error("Auto-invoice for online-paid appointment failed:", err.message);
   }
 
-  // Send booking confirmation email
-  if (patient.email) {
-    const apptDate = appointment.date
-      ? new Date(appointment.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
-      : "N/A";
-
-    sendEmail({
-      to: patient.email,
-      subject: "Appointment Confirmed - Ujjwal Dental Clinic",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
-          <p>Hello ${patient.name || "Patient"},</p>
-          <p>Your appointment has been <strong style="color: #4caf50;">confirmed</strong>!</p>
-          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 4px 0;"><strong>Token #:</strong> ${appointment.tokenNumber || "N/A"}</p>
-            <p style="margin: 4px 0;"><strong>Date:</strong> ${apptDate}</p>
-            <p style="margin: 4px 0;"><strong>Time:</strong> ${appointment.timeSlot || "N/A"}</p>
-            <p style="margin: 4px 0;"><strong>Appointment #:</strong> ${appointment.appointmentNumber || "N/A"}</p>
-          </div>
-          <p>Please arrive 10 minutes before your scheduled time.</p>
-          <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
-          <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
-        </div>
-      `,
-      text: `Hello ${patient.name}, Your appointment is confirmed. Token: ${appointment.tokenNumber}, Date: ${apptDate}, Time: ${appointment.timeSlot}. Please arrive 10 minutes early.`,
-    }).catch((err) => console.error("[Appointment] Failed to send confirmation email:", err));
-  }
+  dispatchBookingNotifications(appointment._id);
 
   /* =======================
      RESPONSE
@@ -980,35 +956,7 @@ export const bookAppointmentFree = asyncHandler(async (req, res) => {
     source: "online",
   });
 
-  if (patient.email) {
-    const apptDate = appointment.date
-      ? new Date(appointment.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
-      : "N/A";
-    sendEmail({
-      to: patient.email,
-      subject: "Appointment Confirmed (Membership Benefit) - Ujjwal Dental Clinic",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #1976d2; text-align: center;">Ujjwal Dental Clinic</h2>
-          <p>Hello ${patient.name || "Patient"},</p>
-          <p>Your appointment has been <strong style="color: #4caf50;">confirmed</strong>!</p>
-          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 8px; margin-bottom: 16px;">
-            <p style="margin: 4px 0; color: #065f46; font-size: 13px;">✓ OPD fee waived — Membership benefit applied</p>
-          </div>
-          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 4px 0;"><strong>Token #:</strong> ${appointment.tokenNumber || "N/A"}</p>
-            <p style="margin: 4px 0;"><strong>Date:</strong> ${apptDate}</p>
-            <p style="margin: 4px 0;"><strong>Time:</strong> ${appointment.timeSlot || "N/A"}</p>
-            <p style="margin: 4px 0;"><strong>Appointment #:</strong> ${appointment.appointmentNumber || "N/A"}</p>
-          </div>
-          <p>Please arrive 10 minutes before your scheduled time.</p>
-          <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
-          <p style="text-align: center; color: #666; font-size: 12px;">Ujjwal Dental Clinic | Patient Portal</p>
-        </div>
-      `,
-      text: `Hello ${patient.name}, Your appointment is confirmed. Token: ${appointment.tokenNumber}, Date: ${apptDate}, Time: ${appointment.timeSlot}. OPD fee waived (membership benefit). Please arrive 10 minutes early.`,
-    }).catch((err) => console.error("[Appointment] Failed to send confirmation email:", err));
-  }
+  dispatchBookingNotifications(appointment._id);
 
   return ApiResponse.created(
     res,
