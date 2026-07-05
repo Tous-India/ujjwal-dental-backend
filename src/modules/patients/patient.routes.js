@@ -60,4 +60,7 @@ router.get('/:id/tests', authProtect, patientController.getPatientTests);
 // Get patient's membership details — admin/staff OR the patient themselves
 router.get('/:id/membership', anyAuth, patientSelfOrAdmin, patientController.getPatientMembership);
 
+// Get patient's active treatment plans with outstanding invoices (admin only)
+router.get('/:id/active-context', authProtect, patientController.getPatientActiveContext);
+
 export default router;
