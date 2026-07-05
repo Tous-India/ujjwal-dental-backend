@@ -618,6 +618,28 @@ export const createAppointment = asyncHandler(async (req, res) => {
       invoiceId = invoice._id;
       appointment.invoice = invoice._id;
       await appointment.save();
+
+      if (appointmentOpdFeePaid) {
+        try {
+          await Payment.create({
+            patient: patient._id ?? patient,
+            clinic,
+            appointment: appointment._id,
+            invoice: invoice._id,
+            type: "opd_fee",
+            amount: resolvedFee,
+            paymentMode: ["cash", "card", "upi"].includes(incomingPaymentMethod)
+              ? incomingPaymentMethod
+              : "cash",
+            status: "paid",
+            receivedBy: req.user?._id,
+            notes: "OPD fee collected at admin walk-in booking",
+          });
+        } catch (payErr) {
+          // Log but do NOT fail the booking — the invoice already reflects the collection
+          console.error("[createAppointment] Failed to create Payment doc for OPD fee:", payErr?.message);
+        }
+      }
     } catch (err) {
       // Don't fail the booking if invoice generation hiccups; log for follow-up.
       console.error("Auto-invoice for appointment failed:", err.message);
