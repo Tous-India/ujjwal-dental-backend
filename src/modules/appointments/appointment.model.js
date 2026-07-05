@@ -226,6 +226,14 @@ const appointmentSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // Email notification tracking
+    notifications: {
+      clinicEmailSentAt: Date,
+      patientEmailSentAt: Date,
+      clinicEmailError: String,
+      patientEmailError: String,
+    },
   },
   {
     timestamps: true,
