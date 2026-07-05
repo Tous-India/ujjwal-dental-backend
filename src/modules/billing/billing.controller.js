@@ -156,6 +156,15 @@ export const createInvoice = asyncHandler(async (req, res) => {
     );
   }
 
+  const hasTreatmentItem = items?.some((item) => item.itemType === "treatment");
+  if (hasTreatmentItem) {
+    return ApiResponse.error(
+      res,
+      "Treatment invoices must be created through appointment booking, not manually.",
+      400,
+    );
+  }
+
   // Validation
   if (!patient || !clinic || !items || items.length === 0) {
     return ApiResponse.error(res, "Patient, clinic and at least one item are required", 400);
