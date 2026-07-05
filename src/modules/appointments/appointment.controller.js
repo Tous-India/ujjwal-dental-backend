@@ -392,6 +392,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     isFree, opdFee: requestOpdFee, opdFeePaid, source, notes,
     visitType, treatmentId, treatmentName, fee, feeNotes, appointmentType, bookingType,
     paymentMethod: incomingPaymentMethod,
+    parentAppointment, sessionNumber,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -469,6 +470,77 @@ export const createAppointment = asyncHandler(async (req, res) => {
   const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
   if (slotError) {
     return ApiResponse.error(res, slotError.message, slotError.status);
+  }
+
+  /* =======================
+     TREATMENT SESSION BRANCH
+     (early return — no fee, no new invoice)
+  ======================== */
+
+  if (visitType === "treatment_session") {
+    if (!parentAppointment) {
+      return ApiResponse.error(res, "parentAppointment is required for treatment session bookings", 400);
+    }
+    if (!mongoose.Types.ObjectId.isValid(parentAppointment)) {
+      return ApiResponse.error(res, "Invalid parentAppointment ID", 400);
+    }
+
+    const parent = await Appointment.findById(parentAppointment).lean();
+    if (!parent) {
+      return ApiResponse.error(res, "Parent appointment not found", 404);
+    }
+    if (parent.visitType !== "treatment") {
+      return ApiResponse.error(res, "Parent appointment must be a treatment appointment (visitType='treatment')", 400);
+    }
+    if (parent.patient.toString() !== patient._id.toString()) {
+      return ApiResponse.error(res, "Session patient must match parent appointment patient", 400);
+    }
+
+    // Auto-calc sessionNumber if not provided
+    let finalSessionNumber = sessionNumber ? Number(sessionNumber) : null;
+    if (!finalSessionNumber) {
+      const existingCount = await Appointment.countDocuments({
+        parentAppointment: parent._id,
+        status: { $ne: "cancelled" },
+      });
+      finalSessionNumber = existingCount + 1;
+    }
+
+    const sessionAppt = await Appointment.create({
+      patient: parent.patient,
+      clinic: parent.clinic,
+      date,
+      timeSlot,
+      visitType: "treatment_session",
+      parentAppointment: parent._id,
+      sessionNumber: finalSessionNumber,
+      treatmentName: parent.treatmentName || "",
+      fee: 0,
+      opdFee: 0,
+      isFree: true,
+      opdFeePaid: false,
+      paymentStatus: "free",
+      paymentMethod: "free",
+      invoice: parent.invoice || null,
+      status: "scheduled",
+      notes,
+      reason: reason || `Session ${finalSessionNumber}: ${parent.treatmentName || "Treatment"}`,
+      source: source || "walk_in",
+      type: type || "regular",
+      appointmentType: isEmergency ? "emergency" : "regular",
+      createdBy: req.user?._id,
+    });
+
+    dispatchBookingNotifications(sessionAppt._id);
+
+    const populated = await Appointment.findById(sessionAppt._id)
+      .populate("patient", "name phone email")
+      .populate("clinic", "name")
+      .populate("parentAppointment", "treatmentName date")
+      .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus")
+      .lean();
+
+    return ApiResponse.created(res, populated, "Treatment session appointment created");
   }
 
   /* =======================
