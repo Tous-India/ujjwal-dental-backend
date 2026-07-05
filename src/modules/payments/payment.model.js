@@ -71,7 +71,7 @@ const paymentSchema = new mongoose.Schema(
     // Payment status
     status: {
       type: String,
-      enum: ["pending", "paid", "failed", "refunded", "cancelled", "reversed"],
+      enum: ["pending", "paid", "failed", "refunded", "refund_pending", "cancelled", "reversed"],
       default: "pending",
     },
 
@@ -132,6 +132,10 @@ const paymentSchema = new mongoose.Schema(
       },
       reason: String,
       razorpayRefundId: String,
+      razorpayError: { type: String, default: null },
+      manualMethod: { type: String, enum: ["cash", "upi", "bank_transfer", null], default: null },
+      confirmedManuallyAt: { type: Date, default: null },
+      confirmedManuallyBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     },
 
     // General notes
@@ -254,6 +258,24 @@ paymentSchema.methods.processRefund = function (
     refundedBy: userId,
     reason,
     razorpayRefundId,
+  };
+  return this.save();
+};
+
+/**
+ * Confirm a manual refund after Razorpay API failure.
+ * Only callable when status === "refund_pending".
+ */
+paymentSchema.methods.confirmManualRefund = function (userId, manualMethod) {
+  if (this.status !== "refund_pending") {
+    throw new Error("Only refund_pending payments can be manually confirmed");
+  }
+  this.status = "refunded";
+  this.refund = {
+    ...this.refund,
+    manualMethod,
+    confirmedManuallyAt: new Date(),
+    confirmedManuallyBy: userId,
   };
   return this.save();
 };
