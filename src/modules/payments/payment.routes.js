@@ -70,6 +70,9 @@ router.delete("/:id", authProtect, paymentController.deletePayment);
 // Process refund - Admin
 router.post("/:id/refund", authProtect, paymentController.processRefund);
 
+// Confirm a manual refund after Razorpay API failure - Admin
+router.post("/:id/confirm-manual-refund", authProtect, paymentController.confirmManualRefund);
+
 // ==================== PATIENT PAYMENTS ====================
 
 // Get patient's payment summary
