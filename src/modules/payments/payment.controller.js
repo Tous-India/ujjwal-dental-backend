@@ -54,7 +54,11 @@ const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, t
     query.patient = patient;
   }
   if (status) {
-    query.status = status;
+    if (status.includes(",")) {
+      query.status = { $in: status.split(",").map((s) => s.trim()) };
+    } else {
+      query.status = status;
+    }
   }
   if (paymentMode) {
     query.paymentMode = paymentMode;
@@ -1040,7 +1044,8 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
         payment.refund = {
           ...payment.refund,
           razorpayRefundId: refundEntity.id,
-          refundedAt: new Date(),
+          refundedAt: payment.refund?.refundedAt || new Date(),
+          razorpayError: null,  // clear any earlier failure note
         };
         await payment.save();
         console.log(`Payment ${payment.paymentNumber} refunded via webhook`);
@@ -1062,6 +1067,12 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
  * @desc    Process refund
  * @route   POST /api/payments/:id/refund
  * @access  Admin
+ *
+ * Two paths:
+ *   1. Razorpay payment: attempts Razorpay API refund. On success → status "refunded".
+ *      On API failure → status "refund_pending" + structured 400 so frontend can offer
+ *      manual confirmation without losing the refund reason/amount.
+ *   2. Offline payment (cash/upi/card): always succeeds locally → status "refunded".
  */
 export const processRefund = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -1095,7 +1106,7 @@ export const processRefund = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Refund amount cannot exceed payment amount", 400);
   }
 
-  // If Razorpay payment, process refund through Razorpay API
+  // ── Path 1: Razorpay payment ────────────────────────────────────────────────
   if (payment.paymentMode === "razorpay" && payment.razorpayPaymentId) {
     try {
       const Razorpay = (await import("razorpay")).default;
@@ -1104,22 +1115,56 @@ export const processRefund = asyncHandler(async (req, res) => {
         key_secret: process.env.RAZORPAY_KEY_SECRET,
       });
 
-      const refund = await razorpay.payments.refund(payment.razorpayPaymentId, {
-        amount: Math.round(refundAmount * 100), // Convert to paise
+      const rzpRefund = await razorpay.payments.refund(payment.razorpayPaymentId, {
+        amount: Math.round(refundAmount * 100),
         notes: { reason: reason || "Refund requested" },
       });
 
-      await payment.processRefund(req.user?._id, reason, refund.id, refundAmount);
+      await payment.processRefund(req.user?._id, reason, rzpRefund.id, refundAmount);
+
+      // Update linked invoice
+      if (payment.invoice) {
+        const invoice = await Invoice.findById(payment.invoice);
+        if (invoice) {
+          invoice.amountPaid -= refundAmount;
+          invoice.calculateTotals();
+          await invoice.save();
+        }
+      }
+
+      const updatedPayment = await Payment.findById(id)
+        .populate("patient", "name phone")
+        .populate("invoice", "invoiceNumber grandTotal balanceDue");
+
+      return ApiResponse.success(res, { payment: updatedPayment }, "Refund processed successfully");
     } catch (error) {
-      console.error("Razorpay refund error:", error);
-      return ApiResponse.error(res, `Razorpay refund failed: ${error.message}`, 500);
+      console.error("[Refund] Razorpay API failed — writing refund_pending:", error);
+
+      // Write refund_pending so the admin can manually confirm without re-entering details
+      payment.status = "refund_pending";
+      payment.refund = {
+        amount: refundAmount,
+        refundedAt: new Date(),
+        refundedBy: req.user?._id,
+        reason,
+        razorpayError: error?.error?.description || error?.message || "Unknown Razorpay error",
+      };
+      await payment.save();
+
+      return res.status(400).json({
+        success: false,
+        code: "RAZORPAY_API_FAILED",
+        message: `Razorpay refund failed: ${error?.error?.description || error?.message}`,
+        canConfirmManual: true,
+        paymentId: payment._id,
+      });
     }
-  } else {
-    // For offline payments, just update the status
-    await payment.processRefund(req.user?._id, reason, undefined, refundAmount);
   }
 
-  // Update invoice if linked
+  // ── Path 2: Offline payment (cash/upi/card) ─────────────────────────────────
+  await payment.processRefund(req.user?._id, reason, undefined, refundAmount);
+
+  // Update linked invoice
   if (payment.invoice) {
     const invoice = await Invoice.findById(payment.invoice);
     if (invoice) {
@@ -1133,7 +1178,40 @@ export const processRefund = asyncHandler(async (req, res) => {
     .populate("patient", "name phone")
     .populate("invoice", "invoiceNumber grandTotal balanceDue");
 
-  ApiResponse.success(res, { payment: updatedPayment }, "Refund processed successfully");
+  return ApiResponse.success(res, { payment: updatedPayment }, "Refund processed successfully");
+});
+
+/**
+ * @desc    Confirm a manual refund after Razorpay API failure
+ * @route   POST /api/payments/:id/confirm-manual-refund
+ * @access  Admin
+ */
+export const confirmManualRefund = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { manualMethod } = req.body;
+
+  if (!["cash", "upi", "bank_transfer"].includes(manualMethod)) {
+    return ApiResponse.error(res, "manualMethod must be cash, upi, or bank_transfer", 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid payment ID", 400);
+  }
+
+  const payment = await Payment.findById(id);
+  if (!payment) return ApiResponse.error(res, "Payment not found", 404);
+
+  if (payment.status !== "refund_pending") {
+    return ApiResponse.error(res, "Only refund_pending payments can be manually confirmed", 400);
+  }
+
+  await payment.confirmManualRefund(req.user?._id, manualMethod);
+
+  const updatedPayment = await Payment.findById(id)
+    .populate("patient", "name phone")
+    .populate("invoice", "invoiceNumber grandTotal balanceDue");
+
+  return ApiResponse.success(res, { payment: updatedPayment }, "Refund confirmed as manually processed");
 });
 
 // ==================== STATISTICS ====================
