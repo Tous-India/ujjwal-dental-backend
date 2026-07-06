@@ -717,14 +717,16 @@ export const createAppointment = asyncHandler(async (req, res) => {
             clinic,
             appointment: appointment._id,
             invoice: invoice._id,
-            type: "opd_fee",
+            type: appointmentVisitType === "treatment" ? "treatment" : "opd_fee",
             amount: requestAmountPaid ?? resolvedFee,
             paymentMode: ["cash", "card", "upi"].includes(incomingPaymentMethod)
               ? incomingPaymentMethod
               : "cash",
             status: "paid",
             receivedBy: req.user?._id,
-            notes: "OPD fee collected at admin walk-in booking",
+            notes: appointmentVisitType === "treatment"
+              ? `Treatment payment collected at booking — ${lineItemDescription}`
+              : "OPD fee collected at admin walk-in booking",
           });
         } catch (payErr) {
           // Log but do NOT fail the booking — the invoice already reflects the collection
