@@ -791,22 +791,22 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
     return ApiResponse.success(res, { activeTreatments: [] });
   }
 
-  // Get all outstanding invoices for this patient (any link — direct or manual)
-  const outstandingInvoices = await Invoice.find({
+  // Get all relevant invoices (unpaid, partial, and paid) for this patient
+  const relevantInvoices = await Invoice.find({
     patient: id,
-    paymentStatus: { $in: ["unpaid", "partial"] },
+    paymentStatus: { $in: ["unpaid", "partial", "paid"] },
   })
     .select("invoiceNumber grandTotal amountPaid balanceDue paymentStatus appointment createdAt")
     .lean();
 
-  if (!outstandingInvoices.length) {
+  if (!relevantInvoices.length) {
     return ApiResponse.success(res, { activeTreatments: [] });
   }
 
-  // For each treatment appointment, find its best matching outstanding invoice:
+  // For each treatment appointment, find its best matching invoice:
   //   1. Direct: invoice._id === appointment.invoice (appointment stores the ref)
   //   2. Reverse: invoice.appointment === appointment._id (invoice stores the ref)
-  //   3. Fallback: any outstanding invoice for the patient (used when both refs are missing/ghost)
+  //   3. Fallback: any unused invoice for the patient (handles ghost refs)
   const usedInvoiceIds = new Set();
   const enriched = await Promise.all(
     treatmentAppts.map(async (t) => {
@@ -814,9 +814,9 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
       const apptInvStr = t.invoice?.toString();
 
       let invoice =
-        outstandingInvoices.find((inv) => apptInvStr && inv._id.toString() === apptInvStr) ||
-        outstandingInvoices.find((inv) => inv.appointment?.toString() === apptIdStr) ||
-        outstandingInvoices.find((inv) => !usedInvoiceIds.has(inv._id.toString()));
+        relevantInvoices.find((inv) => apptInvStr && inv._id.toString() === apptInvStr) ||
+        relevantInvoices.find((inv) => inv.appointment?.toString() === apptIdStr) ||
+        relevantInvoices.find((inv) => !usedInvoiceIds.has(inv._id.toString()));
 
       if (!invoice) return null;
       usedInvoiceIds.add(invoice._id.toString());
@@ -831,6 +831,7 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
         treatmentName: t.treatmentName || t.customTreatmentName || "Treatment",
         parentDate: t.date,
         parentTimeSlot: t.timeSlot,
+        createdAt: t.createdAt,
         invoice: {
           _id: invoice._id,
           invoiceNumber: invoice.invoiceNumber,
@@ -841,9 +842,31 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
         },
         sessionsBooked: sessionsCount,
         nextSessionNumber: sessionsCount + 1,
+        isPaidInFull: invoice.paymentStatus === "paid",
       };
     }),
   );
 
-  return ApiResponse.success(res, { activeTreatments: enriched.filter(Boolean) });
+  // Paid treatments: only show if created within last 90 days OR have recent session activity
+  const NINETY_DAYS = 90 * 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - NINETY_DAYS);
+
+  const finalTreatments = [];
+  for (const t of enriched.filter(Boolean)) {
+    if (!t.isPaidInFull) {
+      finalTreatments.push(t);
+      continue;
+    }
+    const parentCreatedRecently = new Date(t.createdAt) > cutoff;
+    const recentSession = await Appointment.findOne({
+      parentAppointment: t.parentAppointmentId,
+      status: { $ne: "cancelled" },
+      createdAt: { $gt: cutoff },
+    }).lean();
+    if (parentCreatedRecently || recentSession) {
+      finalTreatments.push(t);
+    }
+  }
+
+  return ApiResponse.success(res, { activeTreatments: finalTreatments });
 });
