@@ -1702,3 +1702,82 @@ export const deleteAppointment = asyncHandler(async (req, res) => {
 
   ApiResponse.success(res, null, "Appointment deleted permanently");
 });
+
+/**
+ * @desc    Close a treatment plan — cancels remaining sessions, reconciles invoice
+ * @route   POST /api/appointments/:id/close-treatment
+ * @access  Admin
+ */
+export const closeTreatmentPlan = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { resolution, reason } = req.body;
+
+  if (!reason || !reason.trim()) {
+    return ApiResponse.error(res, "Reason is required to close a treatment plan", 400);
+  }
+  if (!["completed", "write_off", "refund"].includes(resolution)) {
+    return ApiResponse.error(res, "resolution must be completed, write_off, or refund", 400);
+  }
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid appointment ID", 400);
+  }
+
+  const parent = await Appointment.findById(id).populate("invoice");
+  if (!parent) return ApiResponse.error(res, "Appointment not found", 404);
+  if (parent.visitType !== "treatment") {
+    return ApiResponse.error(res, "Can only close treatment appointments", 400);
+  }
+  if (["completed", "closed_early", "abandoned"].includes(parent.treatmentStatus)) {
+    return ApiResponse.error(res, "Treatment is already closed", 400);
+  }
+  if (parent.status === "cancelled") {
+    return ApiResponse.error(res, "Cannot close a cancelled appointment", 400);
+  }
+
+  // Step 1: Cancel all remaining scheduled session appointments
+  const cancelledSessions = await Appointment.updateMany(
+    { parentAppointment: parent._id, status: "scheduled" },
+    { $set: { status: "cancelled", cancellationReason: `Treatment plan closed: ${reason.trim()}` } },
+  );
+
+  // Step 2: Set parent treatment status
+  const statusMap = { completed: "completed", write_off: "abandoned", refund: "closed_early" };
+  parent.treatmentStatus = statusMap[resolution];
+  parent.treatmentClosedAt = new Date();
+  parent.treatmentClosedReason = reason.trim();
+  await parent.save();
+
+  // Step 3: Reconcile invoice (write_off and completed → zero out balance)
+  if (parent.invoice && (resolution === "completed" || resolution === "write_off")) {
+    const invoice = parent.invoice;
+    if (invoice.balanceDue > 0) {
+      const originalBalance = invoice.balanceDue;
+      // Set amountPaid = grandTotal so the pre-save calculateTotals hook
+      // derives balanceDue=0 and paymentStatus="paid" correctly.
+      invoice.amountPaid = invoice.grandTotal;
+      invoice.notes =
+        (invoice.notes ? invoice.notes + "\n" : "") +
+        `[${new Date().toISOString()}] Treatment closed (${resolution}): ${reason.trim()}. Outstanding ₹${originalBalance} written off.`;
+      await invoice.save();
+    }
+  }
+  // resolution === "refund" → invoice left untouched; admin processes refund via Payment History.
+
+  // Step 4: Summary counts
+  const sessionsCompleted = await Appointment.countDocuments({
+    parentAppointment: parent._id,
+    status: "completed",
+  });
+  const sessionsCancelled = cancelledSessions.modifiedCount;
+
+  return ApiResponse.success(
+    res,
+    {
+      treatmentStatus: parent.treatmentStatus,
+      sessionsCancelled,
+      sessionsCompleted,
+      invoiceStatus: parent.invoice?.paymentStatus || null,
+    },
+    "Treatment plan closed",
+  );
+});
