@@ -700,7 +700,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
             unitPrice: resolvedFee,
           },
         ],
-        amountPaid: appointmentOpdFeePaid ? (requestAmountPaid ?? resolvedFee) : 0,
+        amountPaid: 0,
         paymentMethod: appointmentOpdFeePaid
           ? (incomingPaymentMethod === "online" ? "online" : "cash")
           : "pay-at-clinic",
@@ -718,7 +718,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
             appointment: appointment._id,
             invoice: invoice._id,
             type: "opd_fee",
-            amount: resolvedFee,
+            amount: requestAmountPaid ?? resolvedFee,
             paymentMode: ["cash", "card", "upi"].includes(incomingPaymentMethod)
               ? incomingPaymentMethod
               : "cash",
