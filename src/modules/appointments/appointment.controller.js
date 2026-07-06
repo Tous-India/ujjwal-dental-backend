@@ -404,6 +404,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     visitType, treatmentId, treatmentName, fee, feeNotes, appointmentType, bookingType,
     paymentMethod: incomingPaymentMethod,
     parentAppointment, sessionNumber, sessionsPlanned,
+    amountPaid: requestAmountPaid,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -699,7 +700,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
             unitPrice: resolvedFee,
           },
         ],
-        amountPaid: appointmentOpdFeePaid ? resolvedFee : 0,
+        amountPaid: appointmentOpdFeePaid ? (requestAmountPaid ?? resolvedFee) : 0,
         paymentMethod: appointmentOpdFeePaid
           ? (incomingPaymentMethod === "online" ? "online" : "cash")
           : "pay-at-clinic",
