@@ -826,6 +826,16 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
         status: { $ne: "cancelled" },
       });
 
+      const sessionsBooked = sessionsCount + 1; // parent = Session 1, children counted additionally
+      const sessionsPlanned = t.sessionsPlanned || null;
+      const sessionsRemaining = sessionsPlanned ? Math.max(0, sessionsPlanned - sessionsBooked) : null;
+
+      const isComplete =
+        sessionsPlanned !== null &&
+        sessionsBooked >= sessionsPlanned &&
+        invoice.balanceDue === 0;
+      if (isComplete) return null;
+
       return {
         parentAppointmentId: t._id,
         treatmentName: t.treatmentName || t.customTreatmentName || "Treatment",
@@ -840,9 +850,15 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
           balanceDue: invoice.balanceDue,
           paymentStatus: invoice.paymentStatus,
         },
-        sessionsBooked: sessionsCount,
-        nextSessionNumber: sessionsCount + 1,
+        sessionsBooked,
+        sessionsPlanned,
+        sessionsRemaining,
+        nextSessionNumber: sessionsCount + 2, // parent = Session 1, so next child = count + 2
         isPaidInFull: invoice.paymentStatus === "paid",
+        suggestedPaymentPerSession:
+          sessionsPlanned && invoice.balanceDue > 0 && sessionsRemaining > 0
+            ? Math.ceil(invoice.balanceDue / sessionsRemaining)
+            : null,
       };
     }),
   );
