@@ -105,6 +105,14 @@ const appointmentSchema = new mongoose.Schema(
       min: 1,
     },
 
+    // Total sessions planned for a treatment course (set by admin at booking time).
+    // Null = admin didn't specify; frontend treats null as "unknown, keep showing banner".
+    sessionsPlanned: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
+
     // Treatment (catalog) for treatment visits — nullable for OPD visits.
     treatmentId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -304,23 +312,41 @@ appointmentSchema.pre("save", async function () {
     throw new Error("Clinic not found");
   }
 
-  // Appointment number
+  // Appointment number — walk-forward verify (safe after cancellations/deletions;
+  // matches the same pattern used by invoice number generation)
   const now = new Date();
   const year = now.getFullYear().toString().slice(-2);
   const month = String(now.getMonth() + 1).padStart(2, "0");
 
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-  const count = await mongoose.model("Appointment").countDocuments({
-    clinic: this.clinic,
-    createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-  });
-
-  const serial = String(count + 1).padStart(4, "0");
-  // Use clinic code if available, otherwise generate from clinic name
   const clinicCode = clinic.code || clinic.name?.split(/[\s-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 3) || "UDC";
-  this.appointmentNumber = `${clinicCode}-${year}${month}-${serial}`;
+  const prefix = `${clinicCode}-${year}${month}-`;
+
+  const lastAppt = await mongoose.model("Appointment")
+    .findOne({ appointmentNumber: { $regex: `^${prefix}` } })
+    .sort({ appointmentNumber: -1 })
+    .select("appointmentNumber")
+    .lean();
+
+  let nextSerial = 1;
+  if (lastAppt) {
+    const lastSerial = parseInt(lastAppt.appointmentNumber.split("-").pop(), 10);
+    if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
+  }
+
+  for (let i = 0; i < 10; i++) {
+    const candidate = `${prefix}${String(nextSerial + i).padStart(4, "0")}`;
+    const exists = await mongoose.model("Appointment")
+      .findOne({ appointmentNumber: candidate })
+      .lean();
+    if (!exists) {
+      this.appointmentNumber = candidate;
+      break;
+    }
+  }
+
+  if (!this.appointmentNumber) {
+    throw new Error("Could not generate unique appointment number after 10 attempts");
+  }
 
   // Token number — single shared, atomic source for BOTH booking paths
   // (website + admin). Series is per clinic, keyed by the CREATED date in IST,
