@@ -113,6 +113,16 @@ const appointmentSchema = new mongoose.Schema(
       min: 1,
     },
 
+    // Lifecycle status for parent treatment appointments.
+    // Null for OPD and session appointments — only set on visitType="treatment" docs.
+    treatmentStatus: {
+      type: String,
+      enum: ["active", "completed", "closed_early", "abandoned"],
+      default: null,
+    },
+    treatmentClosedAt: { type: Date, default: null },
+    treatmentClosedReason: { type: String, default: null },
+
     // Treatment (catalog) for treatment visits — nullable for OPD visits.
     treatmentId: {
       type: mongoose.Schema.Types.ObjectId,
