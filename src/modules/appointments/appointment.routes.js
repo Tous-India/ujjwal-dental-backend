@@ -82,6 +82,9 @@ router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, appointmentControlle
 // Reschedule appointment — admin/staff only
 router.post("/:id/reschedule", authProtect, appointmentController.rescheduleAppointment);
 
+// Close treatment plan (cancel remaining sessions + reconcile invoice) — admin only
+router.post("/:id/close-treatment", authProtect, adminOnly, appointmentController.closeTreatmentPlan);
+
 // Delete appointment permanently — admin only
 router.delete("/:id", authProtect, adminOnly, appointmentController.deleteAppointment);
 
