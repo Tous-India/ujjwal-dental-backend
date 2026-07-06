@@ -403,7 +403,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     isFree, opdFee: requestOpdFee, opdFeePaid, source, notes,
     visitType, treatmentId, treatmentName, fee, feeNotes, appointmentType, bookingType,
     paymentMethod: incomingPaymentMethod,
-    parentAppointment, sessionNumber,
+    parentAppointment, sessionNumber, sessionsPlanned,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -507,14 +507,18 @@ export const createAppointment = asyncHandler(async (req, res) => {
       return ApiResponse.error(res, "Session patient must match parent appointment patient", 400);
     }
 
-    // Auto-calc sessionNumber if not provided
+    // Auto-calc sessionNumber using MAX of existing sessions + 1.
+    // Parent appointment is implicitly Session 1, so first child = 2.
     let finalSessionNumber = sessionNumber ? Number(sessionNumber) : null;
     if (!finalSessionNumber) {
-      const existingCount = await Appointment.countDocuments({
+      const lastSession = await Appointment.findOne({
         parentAppointment: parent._id,
         status: { $ne: "cancelled" },
-      });
-      finalSessionNumber = existingCount + 1;
+      })
+        .sort({ sessionNumber: -1 })
+        .select("sessionNumber")
+        .lean();
+      finalSessionNumber = (lastSession?.sessionNumber || 1) + 1;
     }
 
     const sessionAppt = await Appointment.create({
@@ -656,6 +660,9 @@ export const createAppointment = asyncHandler(async (req, res) => {
       ? isCustomTreatment
         ? { treatmentName: customTreatmentName }
         : { treatmentId }
+      : {}),
+    ...(appointmentVisitType === "treatment" && sessionsPlanned
+      ? { sessionsPlanned: Number(sessionsPlanned) }
       : {}),
     fee: resolvedFee,
     feeNotes: feeNotes || undefined,
