@@ -22,10 +22,10 @@ describe("Available Slots", () => {
 
     const data = res.body.data;
     expect(Array.isArray(data.availableSlots)).toBe(true);
-    // 9AM-7PM with 30-min slots = 20 total slots
-    expect(data.totalSlots).toBe(20);
+    // 9AM-10PM with 30-min slots = 26 total slots
+    expect(data.totalSlots).toBe(26);
     // No bookings yet, so all slots should be available
-    expect(data.availableSlots.length).toBe(20);
+    expect(data.availableSlots.length).toBe(26);
   });
 
   it("GET /api/appointments/available-slots - returns 400 without query params", async () => {
