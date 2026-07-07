@@ -252,9 +252,11 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid date format", 400);
   }
 
-  // Default clinic hours: 9 AM to 7 PM, 30-min slots
+  // Default clinic hours: 9 AM to 10 PM, 30-min slots. Backend accepts the
+  // full range — the frontend enforces the admin (10 PM) vs patient (7:30 PM)
+  // cutoff by only rendering/requesting within its own allowed slots.
   const SLOT_START_HOUR = 9;
-  const SLOT_END_HOUR = 19;
+  const SLOT_END_HOUR = 22;
   const SLOT_DURATION_MIN = 30;
 
   // Generate all possible slots
