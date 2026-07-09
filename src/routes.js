@@ -20,6 +20,7 @@ import notificationRoutes from "./modules/notifications/notification.routes.js";
 import uploadRoutes from "./modules/uploads/upload.routes.js";
 import enquiryRoutes from "./modules/enquiries/enquiry.routes.js";
 import treatmentPageRoutes from "./modules/cms/treatmentPage.routes.js";
+import blogRoutes from "./modules/blogs/blog.routes.js";
 
 const router = Router();
 
@@ -219,6 +220,20 @@ router.use("/enquiries", enquiryRoutes);
 // POST   /api/cms/treatments/:id/faqs   - Add FAQ
 router.use("/cms/treatments", treatmentPageRoutes);
 
+// ========== BLOGS ==========
+// GET    /api/blogs/public              - List published blogs (public)
+// GET    /api/blogs/public/:slug        - Get published blog by slug (public, increments views)
+// GET    /api/blogs/stats               - Blog stats (admin/blog_editor)
+// GET    /api/blogs                     - List all blogs (admin/blog_editor)
+// GET    /api/blogs/:id                 - Get blog by ID (admin/blog_editor)
+// POST   /api/blogs                     - Create blog (admin/blog_editor)
+// PATCH  /api/blogs/:id                 - Update blog (admin/blog_editor)
+// DELETE /api/blogs/:id                 - Delete blog (admin/blog_editor)
+// POST   /api/blogs/:id/publish         - Publish blog (admin/blog_editor)
+// POST   /api/blogs/:id/unpublish       - Unpublish blog (admin/blog_editor)
+// POST   /api/blogs/upload-image        - Upload blog image (admin/blog_editor)
+router.use("/blogs", blogRoutes);
+
 // ========== API INFO ==========
 router.get("/", (req, res) => {
   res.json({
@@ -245,6 +260,7 @@ router.get("/", (req, res) => {
       cms: {
         treatmentPages: "/api/cms/treatments",
       },
+      blogs: "/api/blogs",
     },
   });
 });
