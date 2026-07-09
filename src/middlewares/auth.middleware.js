@@ -213,6 +213,27 @@ const adminOnly = (req, res, next) => {
 };
 
 /**
+ * Restrict To Middleware
+ *
+ * Use after authProtect to allow one or more specific roles.
+ * Example: restrictTo("admin", "blog_editor") allows either role through.
+ */
+export const restrictTo = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: "Not authenticated" });
+    }
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to perform this action",
+      });
+    }
+    next();
+  };
+};
+
+/**
  * Patient Self or Admin Middleware
  *
  * Use AFTER `anyAuth` (which populates req.user/req.patient and req.userType).
