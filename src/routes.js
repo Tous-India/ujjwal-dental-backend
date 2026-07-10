@@ -21,6 +21,7 @@ import uploadRoutes from "./modules/uploads/upload.routes.js";
 import enquiryRoutes from "./modules/enquiries/enquiry.routes.js";
 import treatmentPageRoutes from "./modules/cms/treatmentPage.routes.js";
 import blogRoutes from "./modules/blogs/blog.routes.js";
+import { optionalAuth } from "./middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -28,6 +29,32 @@ const router = Router();
  * API ROUTES
  * All routes are prefixed with /api (set in app.js)
  */
+
+// ========== BLOG EDITOR APP-WIDE RESTRICTION ==========
+// The blog_editor role must only ever touch /api/blogs/* (and /api/auth/* to
+// log in). Every other module still gates itself with its own
+// authProtect/adminOnly/patientProtect — this only ADDS a block, it never
+// grants access. optionalAuth (not authProtect) is used deliberately: several
+// modules (appointments, billing, followups, memberships, payments) mix
+// patient-facing routes into the same router file, so forcing full admin
+// auth here would break patient-only endpoints. optionalAuth only populates
+// req.user when a valid admin token happens to be present and never fails
+// the request itself — every route's own auth middleware still runs
+// downstream exactly as before for every other role.
+router.use((req, res, next) => {
+  if (req.path.startsWith("/auth") || req.path.startsWith("/blogs")) {
+    return next();
+  }
+  optionalAuth(req, res, () => {
+    if (req.user?.role === "blog_editor") {
+      return res.status(403).json({
+        success: false,
+        message: "Access restricted to blog management only",
+      });
+    }
+    next();
+  });
+});
 
 // ========== AUTH ==========
 // POST /api/auth/login          - Admin login
