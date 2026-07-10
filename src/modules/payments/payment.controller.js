@@ -1569,7 +1569,7 @@ export const collectPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Cannot collect payment on a cancelled invoice", 400);
   }
 
-  if (invoice.paymentStatus === "paid" || invoice.status === "paid") {
+  if (invoice.paymentStatus === "paid") {
     return ApiResponse.error(res, "Invoice is already fully paid", 400);
   }
 
