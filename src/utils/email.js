@@ -1,31 +1,21 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 /**
  * EMAIL UTILITY
  *
- * Handles sending emails via SMTP (configured in .env)
- * Uses nodemailer for email delivery
+ * Handles sending emails via the Resend API (ujjwaldentalplanet.com domain
+ * verified with SPF + DKIM). Replaces the previous nodemailer + Gmail SMTP
+ * setup, which had deliverability issues (booking emails landing in spam).
  */
 
-// Create transporter (reusable)
-let transporter = null;
-
-/**
- * Initialize the email transporter
- */
-const getTransporter = () => {
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: parseInt(process.env.SMTP_PORT) || 587,
-      secure: process.env.SMTP_PORT === "465",
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
+// Lazily instantiated so a missing RESEND_API_KEY only fails an actual send
+// attempt (matching the old nodemailer transporter's behavior), not server boot.
+let resend = null;
+const getResendClient = () => {
+  if (!resend) {
+    resend = new Resend(process.env.RESEND_API_KEY);
   }
-  return transporter;
+  return resend;
 };
 
 /**
@@ -33,17 +23,18 @@ const getTransporter = () => {
  */
 export const sendEmail = async ({ to, subject, text, html }) => {
   try {
-    const transport = getTransporter();
-    const mailOptions = {
-      from: `"Ujjwal Dental Clinic" <${process.env.SMTP_USER}>`,
-      to,
+    const { data, error } = await getResendClient().emails.send({
+      from: "Ujjwal Dental Clinic <notifications@ujjwaldentalplanet.com>",
+      to: Array.isArray(to) ? to : [to],
       subject,
-      text,
       html: html || text,
-    };
-    const result = await transport.sendMail(mailOptions);
-    console.log(`Email sent to ${to}: ${result.messageId}`);
-    return { success: true, messageId: result.messageId };
+      text,
+    });
+    if (error) {
+      throw new Error(error.message || JSON.stringify(error));
+    }
+    console.log(`Email sent to ${to}: ${data?.id}`);
+    return { success: true, messageId: data?.id };
   } catch (error) {
     console.error("Email send error:", error);
     return { success: false, error: error.message };
