@@ -309,7 +309,7 @@ appointmentSchema.index(
 
 /**
  * Generate appointment number before saving
- * Format: CLINIC_CODE-YYMM-SERIAL
+ * Format: CLINIC_CODE-YYMM-HHMM (HHMM = real booking time, not the appointment's date/slot)
  */
 appointmentSchema.pre("save", async function () {
   // Run only for new appointments
@@ -331,20 +331,16 @@ appointmentSchema.pre("save", async function () {
   const clinicCode = clinic.code || clinic.name?.split(/[\s-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 3) || "UDC";
   const prefix = `${clinicCode}-${year}${month}-`;
 
-  const lastAppt = await mongoose.model("Appointment")
-    .findOne({ appointmentNumber: { $regex: `^${prefix}` } })
-    .sort({ appointmentNumber: -1 })
-    .select("appointmentNumber")
-    .lean();
-
-  let nextSerial = 1;
-  if (lastAppt) {
-    const lastSerial = parseInt(lastAppt.appointmentNumber.split("-").pop(), 10);
-    if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
-  }
-
+  // Last 4 digits reflect the real booking moment (HHMM, 24h) rather than a
+  // serial counter — walk forward minute-by-minute on collision (two admins
+  // at the same clinic saving in the same minute). `now` above is the actual
+  // API-call time, so backdated appointments (different `date`/`timeSlot`)
+  // still get a number reflecting when they were ENTERED, not the backdated date.
   for (let i = 0; i < 10; i++) {
-    const candidate = `${prefix}${String(nextSerial + i).padStart(4, "0")}`;
+    const attemptTime = new Date(now.getTime() + i * 60000);
+    const attemptHH = String(attemptTime.getHours()).padStart(2, "0");
+    const attemptMM = String(attemptTime.getMinutes()).padStart(2, "0");
+    const candidate = `${prefix}${attemptHH}${attemptMM}`;
     const exists = await mongoose.model("Appointment")
       .findOne({ appointmentNumber: candidate })
       .lean();
@@ -355,7 +351,12 @@ appointmentSchema.pre("save", async function () {
   }
 
   if (!this.appointmentNumber) {
-    throw new Error("Could not generate unique appointment number after 10 attempts");
+    // Extremely unlikely: 10 straight minutes all collided. Append seconds so
+    // the number stays unique instead of blocking the booking.
+    const ss = String(now.getSeconds()).padStart(2, "0");
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    this.appointmentNumber = `${prefix}${hh}${mm}${ss}`;
   }
 
   // Token number — single shared, atomic source for BOTH booking paths
