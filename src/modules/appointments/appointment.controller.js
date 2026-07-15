@@ -95,6 +95,39 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) 
 };
 
 /**
+ * Auto-completes a treatment when its session count and invoice balance both
+ * reach their targets, without requiring the manual Close Treatment Plan action.
+ * Never overrides an already-set treatmentStatus (e.g. a manual "abandoned"/
+ * "closed_early" stays as-is — this only ever transitions null -> "completed").
+ * Cheap (a couple of DB reads + a conditional save) — safe to await inline from
+ * both the session-booking and session-payment trigger points.
+ */
+export const checkAndAutoCompleteTreatment = async (parentAppointmentId) => {
+  if (!parentAppointmentId) return;
+
+  const parent = await Appointment.findById(parentAppointmentId);
+  if (!parent || parent.visitType !== "treatment") return;
+  if (parent.treatmentStatus) return; // already closed (manually or otherwise) — don't override
+  if (!parent.sessionsPlanned) return; // unknown target — can't auto-complete
+
+  const sessionsCount = await Appointment.countDocuments({
+    parentAppointment: parent._id,
+    status: { $ne: "cancelled" },
+  });
+  const sessionsBooked = sessionsCount + 1; // parent = Session 1
+
+  if (sessionsBooked < parent.sessionsPlanned) return;
+  if (!parent.invoice) return;
+
+  const invoice = await Invoice.findById(parent.invoice).select("balanceDue").lean();
+  if (!invoice || invoice.balanceDue > 0) return;
+
+  parent.treatmentStatus = "completed";
+  parent.treatmentClosedAt = new Date();
+  await parent.save();
+};
+
+/**
  * @desc    Get all appointments
  * @route   GET /api/appointments?date=&clinic=&status=
  * @access  Admin
@@ -552,6 +585,11 @@ export const createAppointment = asyncHandler(async (req, res) => {
       appointmentType: isEmergency ? "emergency" : "regular",
       createdBy: req.user?._id,
     });
+
+    // This session may be the last one needed — if the invoice is already
+    // paid off, auto-complete the treatment right away instead of waiting
+    // for a manual Close Treatment Plan action.
+    await checkAndAutoCompleteTreatment(parent._id);
 
     dispatchBookingNotifications(sessionAppt._id);
 
