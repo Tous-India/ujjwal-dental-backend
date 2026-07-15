@@ -52,6 +52,9 @@ router.get("/today", authProtect, appointmentController.getTodayAppointments);
 // Get upcoming appointments — staff/admin
 router.get("/upcoming", authProtect, appointmentController.getUpcomingAppointments);
 
+// Get stale (stalled) treatments — dashboard flag list — staff/admin
+router.get("/stale-treatments", authProtect, appointmentController.getStaleTreatments);
+
 // Get available slots (for booking) — public
 router.get("/available-slots", appointmentController.getAvailableSlots);
 

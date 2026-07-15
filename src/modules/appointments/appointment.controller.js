@@ -130,6 +130,65 @@ export const checkAndAutoCompleteTreatment = async (parentAppointmentId) => {
   await parent.save();
 };
 
+const STALE_TREATMENT_DAYS = 90;
+
+/**
+ * @desc    Flag treatments that look stalled: not yet closed (treatmentStatus
+ *          is null), have a sessions target that hasn't been reached, and have
+ *          had no booking activity in 90+ days. Computed on every request —
+ *          no stored flag, no cron job. (This app's only existing scheduler,
+ *          followup.scheduler.js, is setInterval-based and only starts from
+ *          server.js — it never runs in the actual Vercel serverless
+ *          deployment, so a cron-based flag would silently never fire there.)
+ * @route   GET /api/appointments/stale-treatments
+ * @access  Admin
+ */
+export const getStaleTreatments = asyncHandler(async (req, res) => {
+  const cutoff = new Date(Date.now() - STALE_TREATMENT_DAYS * 24 * 60 * 60 * 1000);
+
+  const candidates = await Appointment.find({
+    visitType: "treatment",
+    treatmentStatus: null,
+    sessionsPlanned: { $ne: null, $gt: 0 },
+    status: { $ne: "cancelled" },
+  })
+    .populate("patient", "name phone")
+    .populate("clinic", "name code")
+    .lean();
+
+  const stale = [];
+  for (const parent of candidates) {
+    const sessions = await Appointment.find({
+      parentAppointment: parent._id,
+      status: { $ne: "cancelled" },
+    })
+      .select("createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const sessionsBooked = sessions.length + 1; // parent = Session 1
+    if (sessionsBooked >= parent.sessionsPlanned) continue;
+
+    const lastActivity = sessions[0]?.createdAt || parent.createdAt;
+    if (lastActivity > cutoff) continue;
+
+    stale.push({
+      appointmentId: parent._id,
+      patient: parent.patient,
+      clinic: parent.clinic,
+      treatmentName: parent.treatmentName,
+      sessionsBooked,
+      sessionsPlanned: parent.sessionsPlanned,
+      lastActivity,
+      daysSinceActivity: Math.floor((Date.now() - new Date(lastActivity).getTime()) / (24 * 60 * 60 * 1000)),
+    });
+  }
+
+  stale.sort((a, b) => b.daysSinceActivity - a.daysSinceActivity);
+
+  ApiResponse.success(res, { staleTreatments: stale, count: stale.length }, "Stale treatments fetched");
+});
+
 /**
  * @desc    Get all appointments
  * @route   GET /api/appointments?date=&clinic=&status=
