@@ -136,6 +136,10 @@ const paymentSchema = new mongoose.Schema(
       manualMethod: { type: String, enum: ["cash", "upi", "bank_transfer", null], default: null },
       confirmedManuallyAt: { type: Date, default: null },
       confirmedManuallyBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      // Set when the admin refunded more than this payment's amount — a goodwill/
+      // compensation refund on a completed treatment (within the 1-year window),
+      // never blocked, just flagged here for later audit.
+      exceedsCollectedAmount: { type: Boolean, default: false },
     },
 
     // General notes
@@ -250,6 +254,7 @@ paymentSchema.methods.processRefund = function (
   reason,
   razorpayRefundId,
   amount,
+  exceedsCollectedAmount = false,
 ) {
   this.status = "refunded";
   this.refund = {
@@ -258,6 +263,7 @@ paymentSchema.methods.processRefund = function (
     refundedBy: userId,
     reason,
     razorpayRefundId,
+    exceedsCollectedAmount,
   };
   return this.save();
 };

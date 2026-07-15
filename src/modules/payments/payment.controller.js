@@ -3,6 +3,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { notify } from "../../utils/notifyHelper.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
+import Appointment from "../appointments/appointment.model.js";
 import Patient from "../patients/patient.model.js";
 import MembershipPlan from "../memberships/membership.model.js";
 import { TreatmentMaster } from "../treatments/treatment.model.js";
@@ -99,6 +100,11 @@ export const getAllPayments = asyncHandler(async (req, res) => {
       .populate("invoice", "invoiceNumber grandTotal")
       .populate("clinic", "name code")
       .populate("receivedBy", "name")
+      // Lets the admin UI compute the 1-year refund window for completed
+      // treatments without a second round-trip. Only covers payments with a
+      // direct appointment ref — see resolveTreatmentClosure for the fuller
+      // (invoice/settledInvoices) lookup used server-side for enforcement.
+      .populate("appointment", "visitType treatmentStatus treatmentClosedAt")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit)),
@@ -1063,6 +1069,57 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
 
 // ==================== REFUNDS ====================
 
+const REFUND_WINDOW_DAYS = 365;
+
+/**
+ * Trace payment -> invoice -> appointment to find a closed treatment's
+ * treatmentClosedAt (the moment Close Treatment Plan was used). Tries, in order:
+ *   1. payment.appointment (direct ref — set for bookings created via createAppointment
+ *      and via recordPayment when the caller passes an appointment id)
+ *   2. payment.invoice -> invoice.appointment (single-invoice payments)
+ *   3. payment.settledInvoices[0].invoiceId -> invoice.appointment, but ONLY when there
+ *      is exactly one settled invoice — multi-invoice settlements (the admin
+ *      "settle oldest pending invoices" flow, which intentionally never sets
+ *      payment.invoice) can't be traced to one appointment unambiguously.
+ * Returns null when no appointment can be resolved (historical data gap) —
+ * callers must treat null as "no window restriction", not an error.
+ */
+const resolveTreatmentClosure = async (payment) => {
+  let appointment = null;
+
+  if (payment.appointment) {
+    appointment = await Appointment.findById(payment.appointment)
+      .select("visitType treatmentStatus treatmentClosedAt")
+      .lean();
+  }
+
+  if (!appointment && payment.invoice) {
+    const invoice = await Invoice.findById(payment.invoice).select("appointment").lean();
+    if (invoice?.appointment) {
+      appointment = await Appointment.findById(invoice.appointment)
+        .select("visitType treatmentStatus treatmentClosedAt")
+        .lean();
+    }
+  }
+
+  if (!appointment && payment.settledInvoices?.length === 1) {
+    const invoice = await Invoice.findById(payment.settledInvoices[0].invoiceId)
+      .select("appointment")
+      .lean();
+    if (invoice?.appointment) {
+      appointment = await Appointment.findById(invoice.appointment)
+        .select("visitType treatmentStatus treatmentClosedAt")
+        .lean();
+    }
+  }
+
+  if (!appointment || appointment.visitType !== "treatment" || !appointment.treatmentStatus || !appointment.treatmentClosedAt) {
+    return null;
+  }
+
+  return appointment;
+};
+
 /**
  * @desc    Process refund
  * @route   POST /api/payments/:id/refund
@@ -1102,7 +1159,23 @@ export const processRefund = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Refund amount must be greater than 0", 400);
   }
 
-  if (refundAmount > payment.amount) {
+  // A refund tied to a completed treatment (closed via Close Treatment Plan) gets
+  // a 1-year window instead of the usual amount cap — Sunny's explicit goodwill/
+  // compensation-refund allowance. Every other payment keeps the original hard cap.
+  const closedTreatment = await resolveTreatmentClosure(payment);
+  const exceedsCollectedAmount = refundAmount > payment.amount;
+
+  if (closedTreatment) {
+    const daysSinceClosed = (Date.now() - new Date(closedTreatment.treatmentClosedAt).getTime()) / 86400000;
+    if (daysSinceClosed > REFUND_WINDOW_DAYS) {
+      return ApiResponse.error(
+        res,
+        "Refund window has expired for this completed treatment (1 year limit)",
+        400,
+      );
+    }
+    // Within window: amount may exceed payment.amount (goodwill refund) — no cap here.
+  } else if (exceedsCollectedAmount) {
     return ApiResponse.error(res, "Refund amount cannot exceed payment amount", 400);
   }
 
@@ -1120,7 +1193,7 @@ export const processRefund = asyncHandler(async (req, res) => {
         notes: { reason: reason || "Refund requested" },
       });
 
-      await payment.processRefund(req.user?._id, reason, rzpRefund.id, refundAmount);
+      await payment.processRefund(req.user?._id, reason, rzpRefund.id, refundAmount, exceedsCollectedAmount);
 
       // Update linked invoice
       if (payment.invoice) {
@@ -1148,6 +1221,7 @@ export const processRefund = asyncHandler(async (req, res) => {
         refundedBy: req.user?._id,
         reason,
         razorpayError: error?.error?.description || error?.message || "Unknown Razorpay error",
+        exceedsCollectedAmount,
       };
       await payment.save();
 
@@ -1162,7 +1236,7 @@ export const processRefund = asyncHandler(async (req, res) => {
   }
 
   // ── Path 2: Offline payment (cash/upi/card) ─────────────────────────────────
-  await payment.processRefund(req.user?._id, reason, undefined, refundAmount);
+  await payment.processRefund(req.user?._id, reason, undefined, refundAmount, exceedsCollectedAmount);
 
   // Update linked invoice
   if (payment.invoice) {
