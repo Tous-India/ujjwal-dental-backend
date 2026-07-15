@@ -124,6 +124,9 @@ export const checkAndAutoCompleteTreatment = async (parentAppointmentId) => {
 
   parent.treatmentStatus = "completed";
   parent.treatmentClosedAt = new Date();
+  // status is the single unified "is this row done" signal driving list
+  // visibility (covers OPD completions and treatment closures alike).
+  if (parent.status !== "completed") parent.status = "completed";
   await parent.save();
 };
 
@@ -178,24 +181,6 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     }
     filter.patient = { $in: matchingPatients.map((p) => p._id) };
   }
-
-  // Active/Archived — "archived" covers completed OPD visits AND closed
-  // treatments (completed/closed_early/abandoned). Default view (archived
-  // param absent or "false") excludes both; ?archived=true shows only them.
-  // status/treatmentStatus live on the same document but represent different
-  // row types, so this has to be an $or, combined into filter.$and rather
-  // than overwriting any existing top-level filter keys above.
-  const isArchivedView = req.query.archived === "true";
-  const archivedCondition = {
-    $or: [
-      { status: "completed" },
-      { treatmentStatus: { $in: ["completed", "closed_early", "abandoned"] } },
-    ],
-  };
-  filter.$and = [
-    ...(filter.$and || []),
-    isArchivedView ? archivedCondition : { $nor: [archivedCondition] },
-  ];
 
   // 2. Query appointments with pagination
   const skip = (Number(page) - 1) * Number(limit);
@@ -1828,6 +1813,10 @@ export const closeTreatmentPlan = asyncHandler(async (req, res) => {
   parent.treatmentStatus = statusMap[resolution];
   parent.treatmentClosedAt = new Date();
   parent.treatmentClosedReason = reason.trim();
+  // status is the single unified "is this row done" signal driving list
+  // visibility — any closure resolution (completed/abandoned/closed_early)
+  // counts as "completed" from a list-visibility standpoint.
+  if (parent.status !== "completed") parent.status = "completed";
   await parent.save();
 
   // Step 3: Reconcile invoice (write_off and completed → zero out balance)
