@@ -328,7 +328,15 @@ appointmentSchema.pre("save", async function () {
   const year = now.getFullYear().toString().slice(-2);
   const month = String(now.getMonth() + 1).padStart(2, "0");
 
-  const clinicCode = clinic.code || clinic.name?.split(/[\s-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 3) || "UDC";
+  // Prefer an explicit per-clinic code (set on the Clinic doc to avoid
+  // collisions between similarly-named clinics); fall back to computed
+  // name-initials. Always sliced to 2 chars — the appointment number format
+  // is {2-letter-code}-{YYMM}-{HHMM}.
+  const clinicCode = (
+    clinic.code ||
+    clinic.name?.split(/[\s-]+/).map((w) => w[0]).join("").toUpperCase() ||
+    "UC"
+  ).slice(0, 2);
   const prefix = `${clinicCode}-${year}${month}-`;
 
   // Last 4 digits reflect the real booking moment (HHMM, 24h) rather than a
