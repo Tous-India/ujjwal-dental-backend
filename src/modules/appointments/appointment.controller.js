@@ -739,12 +739,15 @@ export const createAppointment = asyncHandler(async (req, res) => {
       // Treatment bookings may carry multiple line items (e.g. "Root Canal" +
       // "Crown") plus a single overall discount %. Falls back to the original
       // single-item shape when `items` isn't provided (OPD path, older callers).
+      const ALLOWED_TREATMENT_ITEM_TYPES = ["treatment", "surgery", "test", "medicine", "other"];
       const invoiceItems =
         appointmentVisitType === "treatment" &&
         Array.isArray(req.body.items) &&
         req.body.items.length > 0
           ? req.body.items.map((item) => ({
-              itemType: "treatment",
+              itemType: ALLOWED_TREATMENT_ITEM_TYPES.includes(item.itemType)
+                ? item.itemType
+                : "treatment",
               description: item.description?.trim() || lineItemDescription,
               unitPrice: Number(item.unitPrice) || 0,
               quantity: Number(item.quantity) || 1,
