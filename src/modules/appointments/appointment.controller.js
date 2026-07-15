@@ -179,6 +179,24 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     filter.patient = { $in: matchingPatients.map((p) => p._id) };
   }
 
+  // Active/Archived — "archived" covers completed OPD visits AND closed
+  // treatments (completed/closed_early/abandoned). Default view (archived
+  // param absent or "false") excludes both; ?archived=true shows only them.
+  // status/treatmentStatus live on the same document but represent different
+  // row types, so this has to be an $or, combined into filter.$and rather
+  // than overwriting any existing top-level filter keys above.
+  const isArchivedView = req.query.archived === "true";
+  const archivedCondition = {
+    $or: [
+      { status: "completed" },
+      { treatmentStatus: { $in: ["completed", "closed_early", "abandoned"] } },
+    ],
+  };
+  filter.$and = [
+    ...(filter.$and || []),
+    isArchivedView ? archivedCondition : { $nor: [archivedCondition] },
+  ];
+
   // 2. Query appointments with pagination
   const skip = (Number(page) - 1) * Number(limit);
 
