@@ -691,17 +691,35 @@ export const createAppointment = asyncHandler(async (req, res) => {
   let invoiceId = null;
   if (!appointmentIsFree && resolvedFee > 0) {
     try {
+      // Treatment bookings may carry multiple line items (e.g. "Root Canal" +
+      // "Crown") plus a single overall discount %. Falls back to the original
+      // single-item shape when `items` isn't provided (OPD path, older callers).
+      const invoiceItems =
+        appointmentVisitType === "treatment" &&
+        Array.isArray(req.body.items) &&
+        req.body.items.length > 0
+          ? req.body.items.map((item) => ({
+              itemType: "treatment",
+              description: item.description?.trim() || lineItemDescription,
+              unitPrice: Number(item.unitPrice) || 0,
+              quantity: Number(item.quantity) || 1,
+            }))
+          : [
+              {
+                itemType: lineItemType,
+                description: lineItemDescription,
+                unitPrice: resolvedFee,
+              },
+            ];
+
       const invoice = await generateInvoice({
         patient, // pass the loaded doc (has hasMembership/currentDiscount virtuals)
         clinic,
         appointment: appointment._id,
-        items: [
-          {
-            itemType: lineItemType,
-            description: lineItemDescription,
-            unitPrice: resolvedFee,
-          },
-        ],
+        items: invoiceItems,
+        ...(req.body.discountPercent
+          ? { discount: { percentage: Number(req.body.discountPercent) } }
+          : {}),
         amountPaid: 0,
         paymentMethod: appointmentOpdFeePaid
           ? (incomingPaymentMethod === "online" ? "online" : "cash")
