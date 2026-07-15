@@ -118,7 +118,11 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
   }
 
   if (visitType) {
-    filter.visitType = visitType;
+    if (visitType.includes(",")) {
+      filter.visitType = { $in: visitType.split(",").map((v) => v.trim()) };
+    } else {
+      filter.visitType = visitType;
+    }
   }
 
   if (date) {
