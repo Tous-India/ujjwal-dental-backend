@@ -88,9 +88,39 @@ const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, t
  * @access  Admin
  */
 export const getAllPayments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentMode, type, clinic, from, to } = req.query;
+  const { page = 1, limit = 10, patient, status, paymentMode, type, clinic, from, to, search } = req.query;
+
+  // Payment has no name/phone of its own — search resolves to matching
+  // Patient _ids first, then filters payments by those ids (mirrors the
+  // enquiry.controller.js search pattern, adapted for a populated ref).
+  let searchPatientIds = null;
+  if (search && search.trim()) {
+    const searchRegex = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const matchingPatients = await Patient.find({
+      $or: [{ name: searchRegex }, { phone: searchRegex }],
+    }).select("_id").lean();
+    searchPatientIds = matchingPatients.map((p) => p._id);
+    if (searchPatientIds.length === 0) {
+      return ApiResponse.paginated(res, [], {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: 0,
+      });
+    }
+  }
 
   const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to });
+  if (searchPatientIds) {
+    // A specific patient id filter combined with search must AND correctly —
+    // narrow to the intersection rather than letting one silently override
+    // the other.
+    if (query.patient) {
+      const alreadyMatches = searchPatientIds.some((id) => id.equals(query.patient));
+      query.patient = alreadyMatches ? query.patient : { $in: [] };
+    } else {
+      query.patient = { $in: searchPatientIds };
+    }
+  }
 
   // Pagination
   const skip = (parseInt(page) - 1) * parseInt(limit);
