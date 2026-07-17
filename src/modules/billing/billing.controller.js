@@ -2,6 +2,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Invoice from "./invoice.model.js";
 import Patient from "../patients/patient.model.js";
+import Payment from "../payments/payment.model.js";
 import mongoose from "mongoose";
 import PDFDocument from "pdfkit";
 
@@ -512,6 +513,18 @@ export const recordPayment = asyncHandler(async (req, res) => {
   ApiResponse.success(res, { invoice: updatedInvoice }, "Payment recorded successfully");
 });
 
+const PAYMENT_TYPE_LABELS = {
+  opd_fee: "OPD Fee",
+  consultation: "Consultation",
+  treatment: "Treatment",
+  test: "Test",
+  invoice_payment: "Invoice Payment",
+  advance: "Advance",
+  membership: "Membership",
+  refund: "Refund",
+  other: "Other",
+};
+
 /**
  * @desc    Get the logged-in patient's own invoices
  * @route   GET /api/billing/invoices/my-invoices
@@ -924,14 +937,28 @@ export const deleteInvoice = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Get the logged-in patient's payment history derived from invoices
+ * @desc    Get the logged-in patient's payment history
  * @route   GET /api/billing/invoices/my-payment-history
  * @access  Patient (Bearer token)
  *
- * Returns all non-cancelled invoices where amountPaid > 0, shaped as payment
- * entries. Patient ID is derived from the auth token — never from a client param
- * (IDOR-safe). Payments recorded via invoice.amountPaid (not Payment collection)
- * are correctly surfaced here.
+ * Patient ID is derived from the auth token — never from a client param
+ * (IDOR-safe). Merges TWO sources so nothing a patient actually paid is
+ * missing, matching what admin's Payment History already shows:
+ *
+ *  1. Payment collection entries (status: "paid") — covers payments recorded
+ *     directly (e.g. manual/legacy "Add Payment" entries) that were never
+ *     linked to an invoice, so they'd otherwise be invisible here.
+ *  2. Invoices with amountPaid > 0 that have NO matching Payment doc — covers
+ *     invoices created with an initial payment via the admin "Create Invoice"
+ *     flow, which sets Invoice.amountPaid directly without ever creating a
+ *     Payment record.
+ *
+ * Invoices already represented by a linked Payment doc are excluded from (2)
+ * to avoid double-counting the same money twice.
+ *
+ * Read-only: does not write to Payment or Invoice, does not backfill/link
+ * anything. The underlying write-path gap (payments not always linked to an
+ * invoice) is intentionally out of scope here.
  */
 export const getMyPaymentHistory = asyncHandler(async (req, res) => {
   const patientId = req.patient?._id;
@@ -939,13 +966,22 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Not authorized", 401);
   }
 
+  const rawPayments = await Payment.find({ patient: patientId, status: "paid" })
+    .populate("invoice", "invoiceNumber grandTotal")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const linkedInvoiceIds = new Set(
+    rawPayments.filter((p) => p.invoice).map((p) => String(p.invoice._id))
+  );
+
   const invoices = await Invoice.find({
     patient: patientId,
     amountPaid: { $gt: 0 },
     status: { $ne: "cancelled" },
   })
     .select("invoiceNumber invoiceDate amountPaid paymentMethod paymentStatus grandTotal items")
-    .sort({ invoiceDate: -1 });
+    .lean();
 
   const itemTypeLabels = {
     opd_fee: "OPD Fee",
@@ -957,28 +993,50 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
     other: "Other",
   };
 
-  const payments = invoices.map((inv) => {
-    const firstItem = inv.items?.[0];
-    const service =
-      firstItem?.description ||
-      itemTypeLabels[firstItem?.itemType] ||
-      "Treatment";
+  const unlinkedInvoiceEntries = invoices
+    .filter((inv) => !linkedInvoiceIds.has(String(inv._id)))
+    .map((inv) => {
+      const firstItem = inv.items?.[0];
+      const service =
+        firstItem?.description ||
+        itemTypeLabels[firstItem?.itemType] ||
+        "Treatment";
 
-    // Normalise legacy "pay-at-clinic" to cash
-    let paymentMode = inv.paymentMethod || "cash";
+      // Normalise legacy "pay-at-clinic" to cash
+      let paymentMode = inv.paymentMethod || "cash";
+      if (paymentMode === "pay-at-clinic") paymentMode = "cash";
+
+      return {
+        _id: inv._id,
+        invoiceNumber: inv.invoiceNumber,
+        date: inv.invoiceDate,
+        service,
+        amountPaid: inv.amountPaid,
+        paymentMethod: paymentMode,
+        paymentStatus: inv.paymentStatus,
+        grandTotal: inv.grandTotal,
+      };
+    });
+
+  const paymentEntries = rawPayments.map((p) => {
+    let paymentMode = p.paymentMode || "cash";
     if (paymentMode === "pay-at-clinic") paymentMode = "cash";
 
     return {
-      _id: inv._id,
-      invoiceNumber: inv.invoiceNumber,
-      date: inv.invoiceDate,
-      service,
-      amountPaid: inv.amountPaid,
+      _id: p._id,
+      invoiceNumber: p.invoice?.invoiceNumber || null,
+      date: p.createdAt,
+      service: PAYMENT_TYPE_LABELS[p.type] || "Payment",
+      amountPaid: p.amount,
       paymentMethod: paymentMode,
-      paymentStatus: inv.paymentStatus,
-      grandTotal: inv.grandTotal,
+      paymentStatus: "paid",
+      grandTotal: p.invoice?.grandTotal ?? p.amount,
     };
   });
+
+  const payments = [...paymentEntries, ...unlinkedInvoiceEntries].sort(
+    (a, b) => new Date(b.date) - new Date(a.date)
+  );
 
   ApiResponse.success(res, payments, "Payment history fetched successfully");
 });
