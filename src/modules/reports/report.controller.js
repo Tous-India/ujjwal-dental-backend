@@ -225,7 +225,7 @@ export const updateReport = asyncHandler(async (req, res) => {
   }
 
   // Update allowed fields
-  const allowedFields = ["title", "description", "isVisibleToPatient", "notes", "tags", "reportDate"];
+  const allowedFields = ["title", "category", "description", "isVisibleToPatient", "notes", "tags", "reportDate"];
 
   allowedFields.forEach((field) => {
     if (req.body[field] !== undefined) {
