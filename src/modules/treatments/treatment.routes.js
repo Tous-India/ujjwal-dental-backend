@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as treatmentController from './treatment.controller.js';
-import authProtect, { adminOnly } from '../../middlewares/auth.middleware.js';
+import authProtect, { restrictTo } from '../../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -27,14 +27,14 @@ router.get('/master', authProtect, treatmentController.getAllTreatmentTypes);
 // Get single treatment type — staff/admin
 router.get('/master/:id', authProtect, treatmentController.getTreatmentTypeById);
 
-// Create new treatment type — admin only
-router.post('/master', authProtect, adminOnly, treatmentController.createTreatmentType);
+// Create new treatment type — admin / clinic manager
+router.post('/master', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.createTreatmentType);
 
-// Update treatment type — admin only
-router.patch('/master/:id', authProtect, adminOnly, treatmentController.updateTreatmentType);
+// Update treatment type — admin / clinic manager
+router.patch('/master/:id', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.updateTreatmentType);
 
-// Delete (deactivate) treatment type — admin only
-router.delete('/master/:id', authProtect, adminOnly, treatmentController.deleteTreatmentType);
+// Delete (deactivate) treatment type — admin / clinic manager
+router.delete('/master/:id', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.deleteTreatmentType);
 
 // ========== TREATMENT INSTANCES (Patient Treatments) ==========
 

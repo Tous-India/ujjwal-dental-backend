@@ -18,7 +18,7 @@ router.get("/public/:slug", blogController.getPublishedBlogBySlug);
 // ==================== ADMIN (admin + blog_editor) ====================
 
 router.use(authProtect);
-router.use(restrictTo("admin", "blog_editor"));
+router.use(restrictTo("admin", "blog_editor", "clinic_manager"));
 
 router.get("/stats", blogController.getBlogStats);
 router.get("/", blogController.getAllBlogs);
