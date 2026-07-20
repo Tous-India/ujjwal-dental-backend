@@ -29,7 +29,13 @@ export const getAllLabOrders = asyncHandler(async (req, res) => {
 
   const query = {};
   if (lab && mongoose.Types.ObjectId.isValid(lab)) query.lab = lab;
-  if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+  if (deliveryStatus) {
+    if (deliveryStatus.includes(",")) {
+      query.deliveryStatus = { $in: deliveryStatus.split(",").map((s) => s.trim()) };
+    } else {
+      query.deliveryStatus = deliveryStatus;
+    }
+  }
   if (paymentStatus) query.paymentStatus = paymentStatus;
 
   // Default to the Active view (non-archived). archived=true shows the archive.
