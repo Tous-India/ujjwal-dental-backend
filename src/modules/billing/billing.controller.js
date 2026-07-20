@@ -526,6 +526,37 @@ const PAYMENT_TYPE_LABELS = {
 };
 
 /**
+ * The real amount a patient has paid, merging the same two sources
+ * getMyPaymentHistory uses (Payment collection + unlinked-invoice
+ * amountPaid) so the summary cards always agree with the payment list.
+ * Read-only — no writes.
+ */
+const getPatientTotalPaid = async (patientId) => {
+  const rawPayments = await Payment.find({ patient: patientId, status: "paid" })
+    .select("amount invoice")
+    .lean();
+
+  const paymentsSum = rawPayments.reduce((s, p) => s + (p.amount || 0), 0);
+  const linkedInvoiceIds = new Set(
+    rawPayments.filter((p) => p.invoice).map((p) => String(p.invoice))
+  );
+
+  const invoices = await Invoice.find({
+    patient: patientId,
+    amountPaid: { $gt: 0 },
+    status: { $ne: "cancelled" },
+  })
+    .select("amountPaid")
+    .lean();
+
+  const unlinkedSum = invoices
+    .filter((inv) => !linkedInvoiceIds.has(String(inv._id)))
+    .reduce((s, inv) => s + (inv.amountPaid || 0), 0);
+
+  return paymentsSum + unlinkedSum;
+};
+
+/**
  * @desc    Get the logged-in patient's own invoices
  * @route   GET /api/billing/invoices/my-invoices
  * @access  Patient (Bearer token)
@@ -673,9 +704,22 @@ export const getBillingStats = asyncHandler(async (req, res) => {
  *
  * Derives the patient from the auth token (req.patient) — never from a client
  * param — so a patient can ONLY ever see their own totals (IDOR-safe).
- * Uses the exact same invoice aggregation as the admin billing stats, scoped to
- * this patient's all-time non-cancelled invoices, so "Pending Amount" equals the
- * sum of per-invoice balanceDue (matches the admin Billing page).
+ *
+ * totalAmount ("Total Billed") still comes from Invoice.getStats — a sum of
+ * grandTotal across this patient's non-cancelled invoices.
+ *
+ * totalPaid / totalDue are recomputed here rather than taken from
+ * Invoice.getStats, because that aggregation sums the stored
+ * Invoice.amountPaid field, which — same root cause as getMyPaymentHistory's
+ * fix above — is incomplete for payments never linked to (or reflected in)
+ * an invoice. totalPaid now uses getPatientTotalPaid(), the exact same
+ * Payment-collection-based total the payment history list already shows, so
+ * the summary cards and the list never disagree. totalDue is then computed
+ * (never read from the stale stored balanceDue) and floored at 0 for
+ * display — a patient can't owe a negative amount, though a paid total that
+ * exceeds the billed total is itself a sign one of their invoices has an
+ * incorrect grandTotal, a separate data issue this read-only fix does not
+ * (and should not) silently correct.
  */
 export const getMyBillingSummary = asyncHandler(async (req, res) => {
   const patientId = req.patient?._id;
@@ -689,8 +733,14 @@ export const getMyBillingSummary = asyncHandler(async (req, res) => {
   };
 
   const stats = await Invoice.getStats(matchQuery);
+  const totalPaid = await getPatientTotalPaid(patientId);
+  const totalDue = Math.max(0, (stats.totalAmount || 0) - totalPaid);
 
-  ApiResponse.success(res, { stats }, "Billing summary fetched successfully");
+  ApiResponse.success(
+    res,
+    { stats: { ...stats, totalPaid, totalDue } },
+    "Billing summary fetched successfully"
+  );
 });
 
 /**
