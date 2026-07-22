@@ -11,6 +11,7 @@ const router = Router();
 
 router.get("/", authProtect, labOrderController.getAllLabOrders);
 router.post("/", authProtect, labOrderController.createLabOrder);
+router.get("/stats", authProtect, labOrderController.getLabOrderStats);
 router.get("/:id", authProtect, labOrderController.getLabOrderById);
 router.patch("/:id", authProtect, labOrderController.updateLabOrder);
 router.post("/:id/payment", authProtect, labOrderController.recordLabOrderPayment);
