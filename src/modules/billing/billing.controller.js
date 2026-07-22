@@ -533,12 +533,24 @@ const PAYMENT_TYPE_LABELS = {
  */
 const getPatientTotalPaid = async (patientId) => {
   const rawPayments = await Payment.find({ patient: patientId, status: "paid" })
-    .select("amount invoice")
+    .select("amount invoice settledInvoices")
     .lean();
 
   const paymentsSum = rawPayments.reduce((s, p) => s + (p.amount || 0), 0);
+  // Invoices already represented by a Payment doc must be excluded from the
+  // "unlinked invoice" sum below, or the same money gets counted twice. The
+  // actual write path (verifyPendingPayment) links a payment to the
+  // invoice(s) it settled via settledInvoices[].invoiceId, NOT the legacy
+  // singular `invoice` field — checking `invoice` alone missed virtually
+  // every real payment, since settledInvoices is what write paths populate.
   const linkedInvoiceIds = new Set(
-    rawPayments.filter((p) => p.invoice).map((p) => String(p.invoice))
+    rawPayments.flatMap((p) => {
+      const ids = p.invoice ? [String(p.invoice)] : [];
+      if (Array.isArray(p.settledInvoices)) {
+        ids.push(...p.settledInvoices.map((s) => String(s.invoiceId)));
+      }
+      return ids;
+    })
   );
 
   const invoices = await Invoice.find({
@@ -1021,8 +1033,19 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
+  // Same fix as getPatientTotalPaid: real payments link to their invoice(s)
+  // via settledInvoices[].invoiceId (what verifyPendingPayment actually
+  // writes), not the legacy singular `invoice` field. Checking `invoice`
+  // alone left almost every invoice looking "unlinked", so its amountPaid
+  // was re-added below even though a Payment entry above already covers it.
   const linkedInvoiceIds = new Set(
-    rawPayments.filter((p) => p.invoice).map((p) => String(p.invoice._id))
+    rawPayments.flatMap((p) => {
+      const ids = p.invoice ? [String(p.invoice._id)] : [];
+      if (Array.isArray(p.settledInvoices)) {
+        ids.push(...p.settledInvoices.map((s) => String(s.invoiceId)));
+      }
+      return ids;
+    })
   );
 
   const invoices = await Invoice.find({
