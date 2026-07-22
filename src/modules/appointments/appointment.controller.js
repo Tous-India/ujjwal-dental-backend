@@ -1358,34 +1358,43 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined;
 
   if (invoiceNeedsSync && appointment.invoice) {
-    const invoice = await Invoice.findById(appointment.invoice);
-    if (invoice) {
-      let invoiceDirty = false;
+    if (appointment.visitType === "treatment_session") {
+      // Session appointments never own invoice pricing -- they bill against the
+      // PARENT treatment's shared invoice. Only the parent treatment appointment
+      // may modify invoice.items pricing. Without this guard, a session's own
+      // isFree/fee state (e.g. a free follow-up visit) would overwrite the whole
+      // shared invoice's item price and zero its grandTotal -- the exact
+      // corruption found in the forensic investigation (INV-2606-0001, INV-2607-0019).
+    } else {
+      const invoice = await Invoice.findById(appointment.invoice);
+      if (invoice) {
+        let invoiceDirty = false;
 
-      // Update invoice line-item price when fee changes
-      if ((fee !== undefined || opdFee !== undefined) && invoice.items?.length > 0) {
-        const effectiveFee = fee !== undefined ? Number(fee) : Number(opdFee);
-        invoice.items[0].unitPrice = appointment.isFree ? 0 : effectiveFee;
-        invoice.calculateTotals(); // recalculate grandTotal in memory before setting amountPaid
-        invoiceDirty = true;
-      }
-
-      // Sync amountPaid to the (possibly recalculated) grandTotal
-      if (paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined) {
-        const newPS = appointment.paymentStatus;
-        if (newPS === "free") {
-          invoice.amountPaid = invoice.grandTotal;
-          invoice.paymentMethod = "free";
-        } else if (newPS === "paid") {
-          invoice.amountPaid = invoice.grandTotal;
-        } else {
-          invoice.amountPaid = 0;
+        // Update invoice line-item price when fee changes
+        if ((fee !== undefined || opdFee !== undefined) && invoice.items?.length > 0) {
+          const effectiveFee = fee !== undefined ? Number(fee) : Number(opdFee);
+          invoice.items[0].unitPrice = appointment.isFree ? 0 : effectiveFee;
+          invoice.calculateTotals(); // recalculate grandTotal in memory before setting amountPaid
+          invoiceDirty = true;
         }
-        invoiceDirty = true;
-      }
 
-      if (invoiceDirty) {
-        await invoice.save(); // pre-save hook re-runs calculateTotals and sets paymentStatus
+        // Sync amountPaid to the (possibly recalculated) grandTotal
+        if (paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined) {
+          const newPS = appointment.paymentStatus;
+          if (newPS === "free") {
+            invoice.amountPaid = invoice.grandTotal;
+            invoice.paymentMethod = "free";
+          } else if (newPS === "paid") {
+            invoice.amountPaid = invoice.grandTotal;
+          } else {
+            invoice.amountPaid = 0;
+          }
+          invoiceDirty = true;
+        }
+
+        if (invoiceDirty) {
+          await invoice.save(); // pre-save hook re-runs calculateTotals and sets paymentStatus
+        }
       }
     }
   }

@@ -266,6 +266,13 @@ invoiceSchema.pre("save", async function () {
  * Calculate all totals
  */
 invoiceSchema.methods.calculateTotals = function () {
+  // Safety net: a paid invoice's grandTotal should never collapse to 0 while it
+  // still has line items. This doesn't block the save (the guard in
+  // updateAppointment is the real fix) -- it's a canary so a similar bug
+  // elsewhere shows up in logs instead of silently corrupting an invoice.
+  const hadNonzeroBalance = (this.amountPaid || 0) > 0;
+  const willHaveItems = this.items && this.items.length > 0;
+
   // Calculate each item's totals
   this.items.forEach((item) => {
     // Calculate item amount after discount
@@ -304,6 +311,14 @@ invoiceSchema.methods.calculateTotals = function () {
 
   // Calculate grand total
   this.grandTotal = Math.max(0, Math.round(discountedSubtotal + this.totalTax));
+
+  if (hadNonzeroBalance && willHaveItems && this.grandTotal === 0) {
+    console.error(
+      `SUSPICIOUS: recalculation would zero grandTotal on a paid invoice ` +
+        `(invoice ${this._id}, invoiceNumber ${this.invoiceNumber}, ` +
+        `amountPaid was ${this.amountPaid}, items still present but priced to 0).`
+    );
+  }
 
   // Calculate balance due
   this.balanceDue = Math.max(0, this.grandTotal - this.amountPaid);
