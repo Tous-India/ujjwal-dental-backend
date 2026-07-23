@@ -690,7 +690,36 @@ export const recordPayment = asyncHandler(async (req, res) => {
     );
   }
 
+  // Capture BEFORE invoice.recordPayment() mutates amountPaid, so the ledger
+  // entry records the true prior balance (same field collectPayment tracks).
+  const previousAmountPaid = invoice.amountPaid || 0;
+
   await invoice.recordPayment(amount);
+
+  // This endpoint previously only mutated the Invoice document -- zero
+  // Payment record was ever created, the exact write-path gap identified
+  // and fixed tonight for collectPayment/recordAdminPayment. Mirrors
+  // collectPayment's already-correct pattern exactly. paymentMode isn't
+  // currently collected by this endpoint's caller (InvoiceDetailModal's
+  // "Record Payment" form only sends amount) -- defaults to "cash" as the
+  // codebase already does elsewhere for admin-recorded payments with no
+  // explicit mode.
+  await Payment.create({
+    patient: invoice.patient,
+    amount,
+    paymentMode: req.body.paymentMode || "cash",
+    type: "invoice_payment",
+    status: "paid",
+    settledInvoices: [
+      {
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        appliedAmount: amount,
+        previousAmountPaid,
+      },
+    ],
+    recordedBy: req.user?._id,
+  });
 
   const updatedInvoice = await Invoice.findById(id)
     .populate("patient", "name phone");
