@@ -1322,6 +1322,69 @@ export const confirmManualRefund = asyncHandler(async (req, res) => {
 // ==================== STATISTICS ====================
 
 /**
+ * @desc    Date-range summary for the Payment History page: Total Collected,
+ *          Total Refunded, Net Collection, Transactions -- computed directly
+ *          from the Payment collection only (never Invoice.grandTotal/
+ *          amountPaid), to stay clear of the invoice-corruption bug class
+ *          found and fixed earlier tonight.
+ * @route   GET /api/payments/summary-stats?from=&to=
+ * @access  Admin
+ *
+ * Date-field choice: totalCollected/transactions use Payment.createdAt (when
+ * the original payment happened). totalRefunded uses refund.refundedAt (when
+ * the refund itself happened), not the original payment's createdAt -- a
+ * payment collected last month but refunded this month should count as
+ * THIS month's refund, matching how a clinic actually reads "this period's"
+ * financials (money that left the account this period), not when the
+ * original (now-reversed) transaction was recorded.
+ */
+export const getPaymentSummaryStats = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+
+  const createdAtRange = {};
+  if (from) createdAtRange.$gte = new Date(from);
+  if (to) createdAtRange.$lte = new Date(to);
+
+  const collectedMatch = { status: { $in: ["paid", "refunded", "refund_pending"] } };
+  if (from || to) collectedMatch.createdAt = createdAtRange;
+
+  const refundedMatch = {
+    status: { $in: ["refunded", "refund_pending"] },
+    "refund.amount": { $exists: true, $ne: null },
+  };
+  if (from || to) refundedMatch["refund.refundedAt"] = createdAtRange;
+
+  const transactionMatch = { status: "paid" };
+  if (from || to) transactionMatch.createdAt = createdAtRange;
+
+  const [collectedResult, refundedResult, transactionCount] = await Promise.all([
+    Payment.aggregate([
+      { $match: collectedMatch },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+    Payment.aggregate([
+      { $match: refundedMatch },
+      { $group: { _id: null, total: { $sum: "$refund.amount" } } },
+    ]),
+    Payment.countDocuments(transactionMatch),
+  ]);
+
+  const totalCollected = collectedResult[0]?.total || 0;
+  const totalRefunded = refundedResult[0]?.total || 0;
+
+  ApiResponse.success(
+    res,
+    {
+      totalCollected,
+      totalRefunded,
+      netCollection: totalCollected - totalRefunded,
+      transactionCount,
+    },
+    "Payment summary stats fetched successfully"
+  );
+});
+
+/**
  * @desc    Get payment statistics
  * @route   GET /api/payments/stats
  * @access  Admin

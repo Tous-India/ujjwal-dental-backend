@@ -22,6 +22,7 @@ router.get("/", authProtect, paymentController.getAllPayments);
 
 // Get payment statistics - Admin
 router.get("/stats", authProtect, paymentController.getPaymentStats);
+router.get("/summary-stats", authProtect, paymentController.getPaymentSummaryStats);
 
 // Get daily collection report - Admin
 router.get("/daily-collection", authProtect, paymentController.getDailyCollection);
