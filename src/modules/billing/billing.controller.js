@@ -104,7 +104,24 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
     Invoice.countDocuments(query),
   ]);
 
-  ApiResponse.paginated(res, invoices, {
+  // Live-recompute amountPaid/balanceDue/paymentStatus for just this page's
+  // rows from real Payment records, rather than trusting the stored fields
+  // -- scoped to only the returned page, so this stays a light query (one
+  // extra Payment lookup for ≤ `limit` invoice ids) rather than a
+  // clinic-wide join on every list request.
+  const realPaidByInvoice = await getRealPaidByInvoiceMap(invoices.map((i) => i._id));
+  const liveInvoices = invoices.map((inv) => {
+    const doc = inv.toObject();
+    const realPaid = realPaidByInvoice.get(String(inv._id)) || 0;
+    doc.amountPaid = realPaid;
+    doc.balanceDue = Math.max(0, (doc.grandTotal || 0) - realPaid);
+    if (realPaid >= doc.grandTotal && doc.grandTotal > 0) doc.paymentStatus = "paid";
+    else if (realPaid > 0) doc.paymentStatus = "partial";
+    else doc.paymentStatus = "unpaid";
+    return doc;
+  });
+
+  ApiResponse.paginated(res, liveInvoices, {
     page: parseInt(page),
     limit: parseInt(limit),
     total,
@@ -784,6 +801,56 @@ const getPatientTotalPaid = async (patientId) => {
 };
 
 /**
+ * Real amount paid PER invoice, computed from the Payment collection
+ * (settledInvoices[].invoiceId, falling back to the legacy singular
+ * `invoice` field), for an arbitrary set of invoice ids.
+ *
+ * Why this exists instead of `totalAmount - totalPaid` at the aggregate
+ * level: a clinic-wide Payment sum includes money that isn't scoped to any
+ * currently-billed invoice at all (standalone payments never linked to an
+ * invoice, or payments referencing an invoice id that no longer exists) --
+ * subtracting that from a clinic-wide grandTotal sum silently erases real
+ * outstanding balance that has nothing to do with it, which is exactly what
+ * produced a clinic-wide "Balance Due" LOWER than a single invoice's own
+ * due (confirmed: Nisha's ₹15,400 alone exceeded the ₹8,597 aggregate-
+ * subtraction figure). Balance due can never be negative per invoice, so it
+ * must be clamped to 0 and summed PER INVOICE, never netted at the
+ * aggregate level.
+ *
+ * @param {Array<ObjectId|string>} invoiceIds
+ * @returns {Promise<Map<string, number>>} invoiceId (string) -> real amount paid
+ */
+const getRealPaidByInvoiceMap = async (invoiceIds) => {
+  const ids = invoiceIds.map((id) => String(id));
+  if (ids.length === 0) return new Map();
+
+  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+  const payments = await Payment.find({
+    status: { $in: ["paid", "refunded", "refund_pending"] },
+    $or: [{ "settledInvoices.invoiceId": { $in: objectIds } }, { invoice: { $in: objectIds } }],
+  })
+    .select("amount invoice settledInvoices")
+    .lean();
+
+  const idSet = new Set(ids);
+  const realPaidByInvoice = new Map();
+  for (const p of payments) {
+    if (Array.isArray(p.settledInvoices) && p.settledInvoices.length > 0) {
+      for (const s of p.settledInvoices) {
+        const id = String(s.invoiceId);
+        if (!idSet.has(id)) continue;
+        const applied = s.appliedAmount != null ? s.appliedAmount : p.amount;
+        realPaidByInvoice.set(id, (realPaidByInvoice.get(id) || 0) + (applied || 0));
+      }
+    } else if (p.invoice && idSet.has(String(p.invoice))) {
+      const id = String(p.invoice);
+      realPaidByInvoice.set(id, (realPaidByInvoice.get(id) || 0) + (p.amount || 0));
+    }
+  }
+  return realPaidByInvoice;
+};
+
+/**
  * @desc    Get the logged-in patient's own invoices
  * @route   GET /api/billing/invoices/my-invoices
  * @access  Patient (Bearer token)
@@ -942,7 +1009,21 @@ export const getBillingStats = asyncHandler(async (req, res) => {
     { $group: { _id: null, total: { $sum: "$amount" } } },
   ]);
   const totalPaid = paidAgg?.total || 0;
-  const totalDue = Math.max(0, (result.totalAmount || 0) - totalPaid);
+
+  // "Balance Due" must NEVER be `totalAmount - totalPaid` at the aggregate
+  // level -- totalPaid is a flat clinic-wide Payment sum that includes money
+  // not scoped to any billed invoice (standalone payments, orphaned invoice
+  // references), so subtracting it can erase real per-invoice balance and
+  // produce a clinic-wide total LOWER than a single invoice's own due (the
+  // exact bug this fixes). Balance due can never be negative per invoice --
+  // clamp to 0 and sum PER INVOICE instead, guaranteeing the total can never
+  // be less than any individual invoice's own due.
+  const matchedInvoices = await Invoice.find(matchQuery).select("_id grandTotal").lean();
+  const realPaidByInvoice = await getRealPaidByInvoiceMap(matchedInvoices.map((i) => i._id));
+  const totalDue = matchedInvoices.reduce((sum, inv) => {
+    const real = realPaidByInvoice.get(String(inv._id)) || 0;
+    return sum + Math.max(0, (inv.grandTotal || 0) - real);
+  }, 0);
 
   ApiResponse.success(
     res,
