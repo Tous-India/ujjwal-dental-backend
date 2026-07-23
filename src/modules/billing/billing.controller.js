@@ -21,10 +21,28 @@ import PDFDocument from "pdfkit";
  * @access  Admin
  */
 export const getAllInvoices = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType, voided } = req.query;
+  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType, voided, search } = req.query;
 
   // Build query
   const query = {};
+
+  // Search by invoice number OR patient name/phone -- resolves matching
+  // Patient _ids first, then filters invoices by those ids (mirrors the
+  // getAllPayments fix and the enquiry.controller.js search pattern).
+  // Previously `search` was destructured from req.query but never applied
+  // to the query at all -- silently a no-op, same bug class as Payment History.
+  if (search && search.trim()) {
+    const searchRegex = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const matchingPatients = await Patient.find({
+      $or: [{ name: searchRegex }, { phone: searchRegex }],
+    }).select("_id").lean();
+    const searchPatientIds = matchingPatients.map((p) => p._id);
+
+    query.$or = [
+      { invoiceNumber: searchRegex },
+      ...(searchPatientIds.length ? [{ patient: { $in: searchPatientIds } }] : []),
+    ];
+  }
 
   // Voided invoices are excluded from the default/active view -- pass
   // voided=true to see ONLY voided invoices (the "Voided" filter tab).
