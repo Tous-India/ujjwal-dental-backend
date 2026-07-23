@@ -21,6 +21,7 @@ import uploadRoutes from "./modules/uploads/upload.routes.js";
 import enquiryRoutes from "./modules/enquiries/enquiry.routes.js";
 import treatmentPageRoutes from "./modules/cms/treatmentPage.routes.js";
 import blogRoutes from "./modules/blogs/blog.routes.js";
+import permissionRoutes from "./modules/permissions/permission.routes.js";
 import { optionalAuth } from "./middlewares/auth.middleware.js";
 
 const router = Router();
@@ -260,6 +261,12 @@ router.use("/cms/treatments", treatmentPageRoutes);
 // POST   /api/blogs/:id/unpublish       - Unpublish blog (admin/blog_editor)
 // POST   /api/blogs/upload-image        - Upload blog image (admin/blog_editor)
 router.use("/blogs", blogRoutes);
+
+// GET   /api/permissions              - Full permission matrix (admin-only)
+// PATCH /api/permissions/:role/:module - Update one role+module's flags (admin-only)
+// Phase 1 of the Permission Manager -- new plumbing only, not yet wired into
+// any existing route's access control.
+router.use("/permissions", permissionRoutes);
 
 // ========== API INFO ==========
 router.get("/", (req, res) => {
