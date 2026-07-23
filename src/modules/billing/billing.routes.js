@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as billingController from "./billing.controller.js";
-import { authProtect, anyAuth, patientProtect, restrictTo } from "../../middlewares/auth.middleware.js";
+import { authProtect, anyAuth, patientProtect } from "../../middlewares/auth.middleware.js";
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 
 const router = Router();
 
@@ -68,8 +69,8 @@ router.post("/invoices/:id/issue", authProtect, billingController.issueInvoice);
 
 // Cancel invoice - Admin
 router.post("/invoices/:id/cancel", authProtect, billingController.cancelInvoice);
-router.post("/invoices/:id/void", authProtect, restrictTo("admin", "clinic_manager"), billingController.voidInvoice);
-router.patch("/invoices/:id/correct", authProtect, restrictTo("admin", "clinic_manager"), billingController.correctInvoice);
+router.post("/invoices/:id/void", authProtect, checkPermission("billing", "delete"), billingController.voidInvoice);
+router.patch("/invoices/:id/correct", authProtect, checkPermission("billing", "edit"), billingController.correctInvoice);
 
 // Record payment on invoice - Admin
 router.post("/invoices/:id/payment", authProtect, billingController.recordPayment);

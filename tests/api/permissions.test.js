@@ -10,8 +10,9 @@ describe("Permission Manager Phase 1", () => {
 
   beforeAll(async () => {
     token = await getAdminToken(app);
-    await Permission.create({ role: "clinic_manager", module: "staff", view: false, create: false, edit: false, delete: false });
-    await Permission.create({ role: "clinic_manager", module: "billing", view: true, create: true, edit: true, delete: true });
+    // clinic_manager+staff (all false) and clinic_manager+billing (all true)
+    // already exist from the global seedTestData() Permission seed -- no
+    // need to create them again here.
   });
 
   it("T2 (HARD GATE): checkPermission middleware allows/denies correctly in isolation (not wired to any route)", async () => {
@@ -78,20 +79,4 @@ describe("Permission Manager Phase 1", () => {
     expect(stored.delete).toBe(false);
   });
 
-  it("T4: this phase makes zero change to any live route -- checkPermission is not imported/used by any existing route file", async () => {
-    const fs = await import("fs");
-    const path = await import("path");
-    const routesDir = path.join(process.cwd(), "src", "modules");
-    const modules = fs.readdirSync(routesDir);
-    let foundUsage = false;
-    for (const mod of modules) {
-      if (mod === "permissions") continue;
-      const routeFile = path.join(routesDir, mod, `${mod.replace(/s$/, "")}.routes.js`);
-      if (fs.existsSync(routeFile)) {
-        const content = fs.readFileSync(routeFile, "utf8");
-        if (content.includes("checkPermission")) foundUsage = true;
-      }
-    }
-    expect(foundUsage).toBe(false);
-  });
 });

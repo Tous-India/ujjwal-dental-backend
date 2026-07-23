@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as clinicController from "./clinic.controller.js";
-import authProtect, { restrictTo } from "../../middlewares/auth.middleware.js";
+import authProtect from "../../middlewares/auth.middleware.js";
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 
 const router = Router();
 
@@ -14,16 +15,16 @@ const router = Router();
 router.get("/", clinicController.getAllClinics);
 
 // Create new clinic (Admin / Clinic Manager)
-router.post("/", authProtect, restrictTo("admin", "clinic_manager"), clinicController.createClinic);
+router.post("/", authProtect, checkPermission("clinics", "create"), clinicController.createClinic);
 
 // Update clinic (Admin / Clinic Manager)
-router.patch("/:id", authProtect, restrictTo("admin", "clinic_manager"), clinicController.updateClinic);
+router.patch("/:id", authProtect, checkPermission("clinics", "edit"), clinicController.updateClinic);
 
 // Soft delete (deactivate) clinic (Admin / Clinic Manager)
-router.delete("/:id", authProtect, restrictTo("admin", "clinic_manager"), clinicController.removeClinic);
+router.delete("/:id", authProtect, checkPermission("clinics", "delete"), clinicController.removeClinic);
 
 // Hard delete (permanent) clinic (Admin / Clinic Manager)
-router.delete("/:id/permanent", authProtect, restrictTo("admin", "clinic_manager"), clinicController.permanentDeleteClinic);
+router.delete("/:id/permanent", authProtect, checkPermission("clinics", "delete"), clinicController.permanentDeleteClinic);
 
 // Get single clinic by ID
 // router.get('/:id', clinicController.getClinicById);

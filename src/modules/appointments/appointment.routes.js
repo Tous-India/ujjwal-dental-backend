@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as appointmentController from "./appointment.controller.js";
-import authProtect, { anyAuth, optionalAuth, patientProtect, restrictTo } from "../../middlewares/auth.middleware.js";
+import authProtect, { anyAuth, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import Appointment from "./appointment.model.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 const router = Router();
@@ -86,10 +87,10 @@ router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, appointmentControlle
 router.post("/:id/reschedule", authProtect, appointmentController.rescheduleAppointment);
 
 // Close treatment plan (cancel remaining sessions + reconcile invoice) — admin / clinic manager
-router.post("/:id/close-treatment", authProtect, restrictTo("admin", "clinic_manager"), appointmentController.closeTreatmentPlan);
+router.post("/:id/close-treatment", authProtect, checkPermission("appointments", "edit"), appointmentController.closeTreatmentPlan);
 
 // Delete appointment permanently — admin / clinic manager
-router.delete("/:id", authProtect, restrictTo("admin", "clinic_manager"), appointmentController.deleteAppointment);
+router.delete("/:id", authProtect, checkPermission("appointments", "delete"), appointmentController.deleteAppointment);
 
 // Get a patient's appointments by phone — patient-self or staff/admin
 router.get("/:phone", anyAuth, phoneSelfOrAdmin, appointmentController.getAppointmentsByPhone);

@@ -7,6 +7,8 @@
 import User from "../../src/modules/users/user.model.js";
 import Patient from "../../src/modules/patients/patient.model.js";
 import Clinic from "../../src/modules/clinics/clinic.model.js";
+import Permission from "../../src/modules/permissions/permission.model.js";
+import { buildPermissionDocs } from "../../src/modules/permissions/permission.constants.js";
 
 export const testData = {
   admin: null,
@@ -19,6 +21,11 @@ export async function seedTestData() {
   await User.deleteMany({});
   await Patient.deleteMany({});
   await Clinic.deleteMany({});
+  await Permission.deleteMany({});
+
+  // Seed the same Permission matrix the real DB has, so checkPermission-gated
+  // routes behave identically in tests (in-memory DB starts empty otherwise).
+  await Permission.insertMany(buildPermissionDocs());
 
   // Create admin
   testData.admin = await User.create({

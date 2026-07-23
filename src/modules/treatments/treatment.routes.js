@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as treatmentController from './treatment.controller.js';
-import authProtect, { restrictTo } from '../../middlewares/auth.middleware.js';
+import authProtect from '../../middlewares/auth.middleware.js';
+import { checkPermission } from '../../middlewares/permission.middleware.js';
 
 const router = Router();
 
@@ -28,13 +29,17 @@ router.get('/master', authProtect, treatmentController.getAllTreatmentTypes);
 router.get('/master/:id', authProtect, treatmentController.getTreatmentTypeById);
 
 // Create new treatment type — admin / clinic manager
-router.post('/master', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.createTreatmentType);
+// NOTE: master catalog routes use the separate "treatment_catalog" module,
+// not "treatments" -- the catalog (price list config) is gated to
+// admin/clinic_manager, while "treatments" covers ungated day-to-day patient
+// treatment work below. See permission.constants.js for why these are split.
+router.post('/master', authProtect, checkPermission("treatment_catalog", "create"), treatmentController.createTreatmentType);
 
 // Update treatment type — admin / clinic manager
-router.patch('/master/:id', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.updateTreatmentType);
+router.patch('/master/:id', authProtect, checkPermission("treatment_catalog", "edit"), treatmentController.updateTreatmentType);
 
 // Delete (deactivate) treatment type — admin / clinic manager
-router.delete('/master/:id', authProtect, restrictTo("admin", "clinic_manager"), treatmentController.deleteTreatmentType);
+router.delete('/master/:id', authProtect, checkPermission("treatment_catalog", "delete"), treatmentController.deleteTreatmentType);
 
 // ========== TREATMENT INSTANCES (Patient Treatments) ==========
 

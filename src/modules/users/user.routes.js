@@ -1,7 +1,8 @@
 import { Router } from "express";
 import * as userController from "./user.controller.js";
 const router = Router();
-import authProtect, { adminOnly } from "../../middlewares/auth.middleware.js";
+import authProtect from "../../middlewares/auth.middleware.js";
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 /**
  * USER ROUTES (Admin/Staff Management)
  * Base path: /api/users
@@ -26,15 +27,15 @@ router.patch("/me/password", authProtect, userController.changePassword);
 router.get("/:id", authProtect, userController.getUserById);
 
 // Create new user (admin/staff) — admin only
-router.post("/", authProtect, adminOnly, userController.createUser);
+router.post("/", authProtect, checkPermission("staff", "create"), userController.createUser);
 
 // Update user by ID (incl. role changes) — admin only
-router.patch("/:id", authProtect, adminOnly, userController.updateUser);
+router.patch("/:id", authProtect, checkPermission("staff", "edit"), userController.updateUser);
 
 // Delete (deactivate) user — admin only
-router.delete("/:id", authProtect, adminOnly, userController.deleteUser);
+router.delete("/:id", authProtect, checkPermission("staff", "delete"), userController.deleteUser);
 
 // Permanently delete user — admin only
-router.delete("/:id/permanent", authProtect, adminOnly, userController.permanentDeleteUser);
+router.delete("/:id/permanent", authProtect, checkPermission("staff", "delete"), userController.permanentDeleteUser);
 
 export default router;
