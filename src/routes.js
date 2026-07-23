@@ -43,7 +43,10 @@ const router = Router();
 // the request itself — every route's own auth middleware still runs
 // downstream exactly as before for every other role.
 router.use((req, res, next) => {
-  if (req.path.startsWith("/auth") || req.path.startsWith("/blogs")) {
+  // /permissions/mine returns only the CALLER's own role's rows (never the
+  // full matrix), so it's safe for every role including blog_editor -- every
+  // role needs it to render their own sidebar, blog_editor included.
+  if (req.path.startsWith("/auth") || req.path.startsWith("/blogs") || req.path === "/permissions/mine") {
     return next();
   }
   optionalAuth(req, res, () => {
