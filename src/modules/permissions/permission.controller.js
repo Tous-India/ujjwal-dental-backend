@@ -22,6 +22,21 @@ export const getAllPermissions = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get the CURRENT authenticated staff user's own permission set
+ *          (just their role's rows, not the full matrix) -- drives the
+ *          dynamic sidebar and route guards for every role, not just admin.
+ * @route   GET /api/permissions/mine
+ * @access  Any authenticated staff user
+ */
+export const getMyPermissions = asyncHandler(async (req, res) => {
+  if (!req.user) {
+    return ApiResponse.error(res, "Not authenticated", 401);
+  }
+  const permissions = await Permission.find({ role: req.user.role }).sort({ module: 1 });
+  ApiResponse.success(res, { role: req.user.role, permissions }, "Your permissions fetched successfully");
+});
+
+/**
  * @desc    Update one role+module's action flags
  * @route   PATCH /api/permissions/:role/:module
  * @access  Admin
