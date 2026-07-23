@@ -25,10 +25,15 @@ describe("Appointment Lifecycle", () => {
     slotDate.getMinutes() < 30 ? "00" : "30"
   }`;
 
-  // Use yesterday for the past-date rejection test
+  // Use yesterday for the within-backdate-window test
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayStr = yesterday.toISOString().split("T")[0];
+
+  // Beyond the 10-day admin backdate window, for the past-date rejection test
+  const tooFarPast = new Date();
+  tooFarPast.setDate(tooFarPast.getDate() - 11);
+  const tooFarPastStr = tooFarPast.toISOString().split("T")[0];
 
   beforeAll(async () => {
     token = await getAdminToken(app);
@@ -82,7 +87,9 @@ describe("Appointment Lifecycle", () => {
     expect(third.body.success).toBe(false);
   });
 
-  it("POST /api/appointments - rejects a past date", async () => {
+  it("POST /api/appointments - admin can book yesterday (within the 10-day backdate window)", async () => {
+    // Admin/clinic_manager may backdate up to 10 days (see MIN_BACKDATE_DAYS
+    // in appointment.controller.js) -- yesterday is well within that window.
     const res = await request(app)
       .post("/api/appointments")
       .set(authHeader(token))
@@ -93,7 +100,25 @@ describe("Appointment Lifecycle", () => {
         date: yesterdayStr,
         timeSlot: "10:00",
         type: "regular",
-        reason: "Past date attempt",
+        reason: "Backdated walk-in",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("POST /api/appointments - rejects a date beyond the 10-day backdate window", async () => {
+    const res = await request(app)
+      .post("/api/appointments")
+      .set(authHeader(token))
+      .send({
+        patientId: testData.patient._id.toString(),
+        phone: testData.patient.phone,
+        clinic: testData.clinic._id.toString(),
+        date: tooFarPastStr,
+        timeSlot: "10:00",
+        type: "regular",
+        reason: "Too-far-past attempt",
       });
 
     expect(res.status).toBe(400);

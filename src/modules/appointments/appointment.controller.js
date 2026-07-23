@@ -24,6 +24,16 @@ import dispatchBookingNotifications from "../../utils/dispatchBookingNotificatio
 const SLOT_BASE_CAPACITY = 2;
 const EMERGENCY_EXTRA = 1;
 
+// Admin/clinic_manager may backdate a booking (walk-in logged late, forgot to
+// enter same-day) up to this many days into the past. Patients booking
+// through the public site / patient portal never get this allowance --
+// callers must explicitly opt in via `allowBackdate`, derived from the
+// authenticated STAFF role, never from a client-supplied flag.
+const MIN_BACKDATE_DAYS = 10;
+
+const canBackdate = (user) =>
+  !!user && ["admin", "clinic_manager"].includes(user.role);
+
 /**
  * Effective seats for a slot given the incoming booking type:
  *  - "emergency" → SLOT_BASE_CAPACITY + EMERGENCY_EXTRA (e.g. 3)
@@ -34,14 +44,20 @@ const slotCapacityFor = (bookingType) =>
 
 /**
  * Validate an appointment's date/timeSlot against the booking rules:
- *  - the date must not be in the past
- *  - if the date is today, the slot must not have already passed
+ *  - the date must not be in the past (unless `allowBackdate`, in which case
+ *    up to MIN_BACKDATE_DAYS days ago is permitted -- admin/clinic_manager
+ *    logging a walk-in after the fact)
+ *  - if the date is today, the slot must not have already passed (this check
+ *    only makes sense for today -- a backdated date is skipped entirely,
+ *    every slot on a past day is trivially "in the past" time-wise)
  *  - the slot must have fewer than the effective capacity of active
- *    (non-cancelled) bookings. Capacity is 2 for regular, 3 for emergency.
+ *    (non-cancelled) bookings. Capacity is 2 for regular, 3 for emergency --
+ *    applies identically to backdated entries, so backdating can't bypass
+ *    capacity limits.
  *
  * Returns `{ status, message }` when invalid, or `null` when the slot is OK.
  */
-const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) => {
+const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType, allowBackdate = false }) => {
   const requestedDate = new Date(date);
   if (isNaN(requestedDate.getTime())) {
     return { status: 400, message: "Invalid date format" };
@@ -54,12 +70,24 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType }) 
   const dayStart = new Date(requestedDate);
   dayStart.setHours(0, 0, 0, 0);
 
-  // 1) No past dates
-  if (dayStart < todayStart) {
+  // 1) Past-date boundary: today-forward for everyone by default; staff with
+  //    backdating rights may go down to (today - MIN_BACKDATE_DAYS).
+  if (allowBackdate) {
+    const earliestBackdate = new Date(todayStart);
+    earliestBackdate.setDate(earliestBackdate.getDate() - MIN_BACKDATE_DAYS);
+    if (dayStart < earliestBackdate) {
+      return {
+        status: 400,
+        message: `Cannot backdate an appointment more than ${MIN_BACKDATE_DAYS} days`,
+      };
+    }
+  } else if (dayStart < todayStart) {
     return { status: 400, message: "Cannot book an appointment in the past" };
   }
 
-  // 2) No past time slots when booking for today
+  // 2) No past time slots when booking for today. Skipped entirely for any
+  //    non-today date -- including backdated ones, whose slots are all
+  //    trivially "past" time-wise and shouldn't be rejected on that basis.
   const isToday = dayStart.getTime() === todayStart.getTime();
   if (isToday && timeSlot) {
     const [h, m] = String(timeSlot).split(":").map(Number);
@@ -580,7 +608,18 @@ export const createAppointment = asyncHandler(async (req, res) => {
      (past date, past time, capacity)
   ======================== */
 
-  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
+  // Backdating is a staff (admin/clinic_manager) privilege only. This route
+  // is reachable via optionalAuth (also used for logged-out/patient calls),
+  // so the allowance is derived strictly from req.user's role -- never from
+  // any client-supplied flag -- meaning patient-initiated bookings (which
+  // never populate req.user) can never backdate regardless of what they send.
+  const slotError = await validateAppointmentSlot({
+    clinic,
+    date,
+    timeSlot,
+    bookingType: urgency,
+    allowBackdate: canBackdate(req.user),
+  });
   if (slotError) {
     return ApiResponse.error(res, slotError.message, slotError.status);
   }
@@ -1276,6 +1315,28 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     const endOfDay = new Date(newDate);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // Same backdating rule as create/reschedule: only when the date is
+    // actually being changed, and only admin/clinic_manager may move it
+    // into the past, capped at MIN_BACKDATE_DAYS.
+    if (date) {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      if (startOfDay < todayStart) {
+        if (!canBackdate(req.user)) {
+          return ApiResponse.error(res, "Cannot move an appointment to a past date", 400);
+        }
+        const earliestBackdate = new Date(todayStart);
+        earliestBackdate.setDate(earliestBackdate.getDate() - MIN_BACKDATE_DAYS);
+        if (startOfDay < earliestBackdate) {
+          return ApiResponse.error(
+            res,
+            `Cannot backdate an appointment more than ${MIN_BACKDATE_DAYS} days`,
+            400
+          );
+        }
+      }
+    }
+
     // Use incoming urgency (or existing) to determine the effective capacity
     const urgency = appointmentType || appointment.appointmentType || "regular";
     const capacity = slotCapacityFor(urgency);
@@ -1717,7 +1778,17 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
   const dayStart = new Date(requestedDate);
   dayStart.setHours(0, 0, 0, 0);
 
-  if (dayStart < todayStart) {
+  if (canBackdate(req.user)) {
+    const earliestBackdate = new Date(todayStart);
+    earliestBackdate.setDate(earliestBackdate.getDate() - MIN_BACKDATE_DAYS);
+    if (dayStart < earliestBackdate) {
+      return ApiResponse.error(
+        res,
+        `Cannot backdate an appointment more than ${MIN_BACKDATE_DAYS} days`,
+        400
+      );
+    }
+  } else if (dayStart < todayStart) {
     return ApiResponse.error(res, "Cannot reschedule to a past date", 400);
   }
 
