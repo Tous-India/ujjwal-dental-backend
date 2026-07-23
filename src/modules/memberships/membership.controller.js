@@ -2,6 +2,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import MembershipPlan from "./membership.model.js";
 import Patient from "../patients/patient.model.js";
+import Payment from "../payments/payment.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
 import { notify } from "../../utils/notifyHelper.js";
 import mongoose from "mongoose";
@@ -12,6 +13,16 @@ const toInvoicePaymentMethod = (method) => {
   if (["cash", "card", "upi", "online"].includes(method)) return method;
   if (method === "bank_transfer") return "online";
   return undefined;
+};
+
+// Map a membership paymentMethod to Payment.paymentMode's enum
+// (["cash","card","upi","razorpay","netbanking","other"] -- distinct from
+// Invoice.paymentMethod's enum, which also allows "online"/"pay-at-clinic"/"free").
+const toPaymentMode = (method) => {
+  if (["cash", "card", "upi"].includes(method)) return method;
+  if (method === "online") return "razorpay";
+  if (method === "bank_transfer") return "netbanking";
+  return "other";
 };
 
 /**
@@ -437,7 +448,7 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
   const membershipPaid = patient.membership.amountPaid;
   if (membershipPaid && membershipPaid > 0) {
     try {
-      await generateInvoice({
+      const invoice = await generateInvoice({
         patient,
         clinic: patient.preferredClinic || undefined,
         items: [
@@ -451,6 +462,27 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
         paymentMethod: toInvoicePaymentMethod(patient.membership.paymentMethod),
         createdBy: req.user?._id,
         applyMembershipDiscount: false, // the membership purchase itself isn't discounted
+      });
+
+      // Previously the invoice was the ONLY record of this money -- no
+      // Payment document was ever created, the exact write-path gap
+      // confirmed as this session's root-cause pattern. Mirrors
+      // collectPayment's already-correct settledInvoices linkage.
+      await Payment.create({
+        patient: patient._id,
+        amount: membershipPaid,
+        paymentMode: toPaymentMode(patient.membership.paymentMethod),
+        type: "membership",
+        status: "paid",
+        settledInvoices: [
+          {
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoiceNumber,
+            appliedAmount: membershipPaid,
+            previousAmountPaid: 0,
+          },
+        ],
+        recordedBy: req.user?._id,
       });
     } catch (err) {
       console.error("Auto-invoice for manual membership failed:", err.message);
@@ -817,7 +849,7 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
   // Auto-invoice for the online membership purchase (paid). No existing invoice
   // is created elsewhere in this flow, so there's nothing to duplicate.
   try {
-    await generateInvoice({
+    const invoice = await generateInvoice({
       patient,
       clinic: patient.preferredClinic || undefined,
       items: [
@@ -830,6 +862,28 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
       amountPaid: plan.price,
       paymentMethod: "online",
       applyMembershipDiscount: false,
+    });
+
+    // Previously the invoice was the ONLY record of this money -- no Payment
+    // document was ever created here. This is the confirmed root cause of
+    // Vivek's phantom membership invoice (INV-2607-0021, voided earlier
+    // tonight). Mirrors collectPayment's already-correct settledInvoices
+    // linkage. recordedBy is omitted (patient-initiated, no admin actor --
+    // matches how verifyRazorpayPayment attributes patient-initiated payments).
+    await Payment.create({
+      patient: patient._id,
+      amount: plan.price,
+      paymentMode: "razorpay",
+      type: "membership",
+      status: "paid",
+      settledInvoices: [
+        {
+          invoiceId: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          appliedAmount: plan.price,
+          previousAmountPaid: 0,
+        },
+      ],
     });
   } catch (err) {
     console.error("Auto-invoice for membership purchase failed:", err.message);
