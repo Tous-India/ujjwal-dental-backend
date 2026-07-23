@@ -913,12 +913,41 @@ export const getBillingStats = asyncHandler(async (req, res) => {
   }
 
   // Shared aggregation (same source the patient billing summary uses).
+  // "Total Amount" ("invoices raised") stays Invoice.grandTotal-derived --
+  // that's a legitimate, different concept from money actually collected.
   const result = await Invoice.getStats(matchQuery);
+
+  // "Total Paid" now derives from the Payment collection directly, NOT
+  // Invoice.amountPaid -- same source and same status scope
+  // (paid/refunded/refund_pending, i.e. gross collected) as Payment
+  // History's "Total Collected" (getPaymentSummaryStats), so the two can
+  // never disagree again. Invoice.amountPaid has repeatedly proven
+  // unreliable this session (corruption bug, multiple write-path gaps) even
+  // though the specific known gaps are now fixed -- deriving from the
+  // ledger itself is the more resilient source of truth going forward.
+  const paymentMatch = { status: { $in: ["paid", "refunded", "refund_pending"] } };
+  if (startDate || endDate) {
+    paymentMatch.createdAt = {};
+    if (startDate) paymentMatch.createdAt.$gte = startDate;
+    if (endDate) paymentMatch.createdAt.$lte = endDate;
+  }
+  if (patient && mongoose.Types.ObjectId.isValid(patient)) {
+    paymentMatch.patient = new mongoose.Types.ObjectId(patient);
+  }
+  if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
+    paymentMatch.clinic = new mongoose.Types.ObjectId(clinic);
+  }
+  const [paidAgg] = await Payment.aggregate([
+    { $match: paymentMatch },
+    { $group: { _id: null, total: { $sum: "$amount" } } },
+  ]);
+  const totalPaid = paidAgg?.total || 0;
+  const totalDue = Math.max(0, (result.totalAmount || 0) - totalPaid);
 
   ApiResponse.success(
     res,
     {
-      stats: result,
+      stats: { ...result, totalPaid, totalDue },
       dateRange: { from: startDate, to: endDate },
     },
     "Billing statistics fetched successfully"
