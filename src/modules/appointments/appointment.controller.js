@@ -1143,6 +1143,22 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     invoiceId = invoice._id;
     appointment.invoice = invoice._id;
     await appointment.save();
+
+    // Link the already-paid `payment` doc to this invoice via settledInvoices
+    // (NOT the singular `invoice` field -- that would fire the post-save
+    // hook's invoice.recordPayment() a second time, double-applying amountPaid
+    // that generateInvoice() above already set once). This was previously an
+    // orphaned Payment record: real money collected, never cross-referenced
+    // to the invoice it paid for.
+    payment.settledInvoices = [
+      {
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        appliedAmount: payment.amount,
+        previousAmountPaid: 0,
+      },
+    ];
+    await payment.save();
   } catch (err) {
     // Don't fail the booking if invoice generation hiccups; log for follow-up.
     console.error("Auto-invoice for online-paid appointment failed:", err.message);
