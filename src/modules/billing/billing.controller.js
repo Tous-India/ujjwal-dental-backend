@@ -21,10 +21,18 @@ import PDFDocument from "pdfkit";
  * @access  Admin
  */
 export const getAllInvoices = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType } = req.query;
+  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType, voided } = req.query;
 
   // Build query
   const query = {};
+
+  // Voided invoices are excluded from the default/active view -- pass
+  // voided=true to see ONLY voided invoices (the "Voided" filter tab).
+  if (voided === "true") {
+    query.isVoided = true;
+  } else {
+    query.isVoided = { $ne: true };
+  }
 
   if (patient && mongoose.Types.ObjectId.isValid(patient)) {
     query.patient = patient;
@@ -466,6 +474,165 @@ export const cancelInvoice = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Void an invoice — self-service correction for phantom/erroneous
+ *          invoices (e.g. a double-submit), safe to use even on paid
+ *          invoices (unlike cancelInvoice, which blocks on any payment).
+ * @route   POST /api/billing/invoices/:id/void
+ * @access  Admin / Clinic Manager
+ *
+ * Pure status flag -- never deletes the invoice, never touches any linked
+ * Payment document. Voided invoices stay fully visible/queryable via the
+ * `voided=true` filter on getAllInvoices, they just drop out of active
+ * lists/totals by default.
+ */
+export const voidInvoice = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid invoice ID", 400);
+  }
+  if (!reason || reason.trim().length < 10) {
+    return ApiResponse.error(res, "A reason of at least 10 characters is required to void an invoice", 400);
+  }
+
+  const invoice = await Invoice.findById(id);
+  if (!invoice) {
+    return ApiResponse.error(res, "Invoice not found", 404);
+  }
+  if (invoice.isVoided) {
+    return ApiResponse.error(res, "Invoice is already voided", 400);
+  }
+
+  await Invoice.updateOne(
+    { _id: id },
+    {
+      $set: {
+        isVoided: true,
+        voidedAt: new Date(),
+        voidedBy: req.user?._id || null,
+        voidReason: reason.trim(),
+      },
+    }
+  );
+
+  const updated = await Invoice.findById(id).populate("patient", "name phone");
+  ApiResponse.success(res, { invoice: updated }, "Invoice voided successfully");
+});
+
+/**
+ * @desc    Manually correct an invoice's items/discount/amountPaid -- a
+ *          self-service tool so admin can fix a billing error (wrong totals,
+ *          incomplete write-path data) without a developer running a script.
+ * @route   PATCH /api/billing/invoices/:id/correct
+ * @access  Admin / Clinic Manager
+ *
+ * Uses updateOne/$set exclusively -- NEVER a fetch-modify-.save() pattern --
+ * so this tool cannot itself re-trigger the invoice-corruption bug class
+ * (a pre-save hook recalculating grandTotal against stale/cleared items)
+ * found and fixed earlier. All arithmetic happens here in plain JS before
+ * the single $set write.
+ */
+export const correctInvoice = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { items, discount, amountPaid, reason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid invoice ID", 400);
+  }
+  if (!reason || reason.trim().length < 10) {
+    return ApiResponse.error(res, "A reason of at least 10 characters is required to correct an invoice", 400);
+  }
+
+  const invoice = await Invoice.findById(id).lean();
+  if (!invoice) {
+    return ApiResponse.error(res, "Invoice not found", 404);
+  }
+
+  const changes = {};
+  const set = {};
+
+  // Items: recompute each item's amount/tax/total and the invoice subtotal
+  // directly in JS (mirrors Invoice.calculateTotals()'s math, but run here
+  // once rather than via a document save/pre-save hook).
+  const effectiveItems = items || invoice.items || [];
+  if (items) {
+    const recomputedItems = items.map((item) => {
+      let amount = (item.unitPrice || 0) * (item.quantity || 1);
+      const pct = item.discount?.percentage || 0;
+      const amt = item.discount?.amount || 0;
+      if (pct > 0) amount -= (amount * pct) / 100;
+      if (amt > 0) amount -= amt;
+      amount = Math.max(0, amount);
+      const taxAmount = (amount * (item.taxRate || 0)) / 100;
+      return { ...item, amount, taxAmount, total: amount + taxAmount };
+    });
+    set.items = recomputedItems;
+    changes.items = { from: invoice.items, to: recomputedItems };
+  }
+
+  const finalItems = items ? set.items : effectiveItems;
+  const subtotal = finalItems.reduce((s, it) => s + (it.amount || 0), 0);
+  const totalTax = finalItems.reduce((s, it) => s + (it.taxAmount || 0), 0);
+
+  const effectiveDiscount = discount !== undefined ? discount : invoice.discount;
+  if (discount !== undefined) {
+    set.discount = discount;
+    changes.discount = { from: invoice.discount, to: discount };
+  }
+
+  let discountedSubtotal = subtotal;
+  if (effectiveDiscount?.percentage > 0) {
+    discountedSubtotal -= (discountedSubtotal * effectiveDiscount.percentage) / 100;
+  }
+  if (effectiveDiscount?.amount > 0) {
+    discountedSubtotal -= effectiveDiscount.amount;
+  }
+  const grandTotal = Math.max(0, Math.round(discountedSubtotal + totalTax));
+
+  const effectiveAmountPaid = amountPaid !== undefined ? amountPaid : invoice.amountPaid;
+  if (amountPaid !== undefined) {
+    changes.amountPaid = { from: invoice.amountPaid, to: amountPaid };
+  }
+  const balanceDue = Math.max(0, grandTotal - effectiveAmountPaid);
+
+  let paymentStatus = "unpaid";
+  if (effectiveAmountPaid >= grandTotal && grandTotal > 0) paymentStatus = "paid";
+  else if (effectiveAmountPaid > 0) paymentStatus = "partial";
+
+  if (items) set.subtotal = subtotal;
+  if (items) set.totalTax = totalTax;
+  set.grandTotal = grandTotal;
+  set.balanceDue = balanceDue;
+  set.paymentStatus = paymentStatus;
+  if (amountPaid !== undefined) set.amountPaid = amountPaid;
+  set.lastEditedAt = new Date();
+  set.lastEditedBy = req.user?._id || null;
+
+  if (Object.keys(changes).length === 0) {
+    return ApiResponse.error(res, "No fields to correct were provided", 400);
+  }
+
+  await Invoice.updateOne(
+    { _id: id },
+    {
+      $set: set,
+      $push: {
+        editHistory: {
+          editedAt: new Date(),
+          editedBy: req.user?._id || null,
+          reason: reason.trim(),
+          changes,
+        },
+      },
+    }
+  );
+
+  const updated = await Invoice.findById(id).populate("patient", "name phone");
+  ApiResponse.success(res, { invoice: updated }, "Invoice corrected successfully");
+});
+
+/**
  * @desc    Record payment for invoice
  * @route   POST /api/billing/invoices/:id/payment
  * @access  Admin
@@ -557,6 +724,7 @@ const getPatientTotalPaid = async (patientId) => {
     patient: patientId,
     amountPaid: { $gt: 0 },
     status: { $ne: "cancelled" },
+    isVoided: { $ne: true },
   })
     .select("amountPaid")
     .lean();
@@ -583,7 +751,7 @@ export const getMyInvoices = asyncHandler(async (req, res) => {
   }
 
   const { page = 1, limit = 50, status } = req.query;
-  const query = { patient: patientId };
+  const query = { patient: patientId, isVoided: { $ne: true } };
   if (status) {
     query.status = status;
   }
@@ -640,6 +808,7 @@ export const getPatientPendingAmount = asyncHandler(async (req, res) => {
     patient: patientId,
     paymentStatus: { $in: ["unpaid", "partial"] },
     status: { $ne: "cancelled" },
+    isVoided: { $ne: true },
   }).select("grandTotal amountPaid invoiceNumber");
 
   const pendingAmount = invoices.reduce((sum, inv) => {
@@ -675,7 +844,7 @@ export const getBillingStats = asyncHandler(async (req, res) => {
   const { clinic, from, to, patient } = req.query;
 
   // Build match query (same aggregation the Billing page uses).
-  const matchQuery = { status: { $ne: "cancelled" } };
+  const matchQuery = { status: { $ne: "cancelled" }, isVoided: { $ne: true } };
 
   // Date window: only applied when the admin explicitly provides a range.
   // No date params → no date filter → all-time stats, consistent with the
@@ -742,6 +911,7 @@ export const getMyBillingSummary = asyncHandler(async (req, res) => {
   const matchQuery = {
     patient: new mongoose.Types.ObjectId(patientId),
     status: { $ne: "cancelled" },
+    isVoided: { $ne: true },
   };
 
   const stats = await Invoice.getStats(matchQuery);
@@ -1052,6 +1222,7 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
     patient: patientId,
     amountPaid: { $gt: 0 },
     status: { $ne: "cancelled" },
+    isVoided: { $ne: true },
   })
     .select("invoiceNumber invoiceDate amountPaid paymentMethod paymentStatus grandTotal items")
     .lean();
@@ -1135,6 +1306,7 @@ export const getPatientUnpaidInvoices = asyncHandler(async (req, res) => {
     patient: patientId,
     paymentStatus: { $in: ["unpaid", "partial"] },
     status: { $ne: "cancelled" },
+    isVoided: { $ne: true },
   })
     .sort({ createdAt: 1 })
     .select("invoiceNumber invoiceDate dueDate grandTotal amountPaid paymentStatus status items");

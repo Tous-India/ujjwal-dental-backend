@@ -222,6 +222,33 @@ const invoiceSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+
+    // Void — a self-service correction flag for invoices that turn out to be
+    // phantom/erroneous (e.g. a double-submit), distinct from `cancel` above
+    // (which only works on unpaid/no-payment invoices). Void works on ANY
+    // invoice, including paid ones, and NEVER deletes the record or touches
+    // linked Payment documents — pure audit-trailed status flag.
+    isVoided: { type: Boolean, default: false },
+    voidedAt: { type: Date, default: null },
+    voidedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    voidReason: { type: String, default: null },
+
+    // Manual correction audit trail — every admin edit via the Edit Invoice
+    // tool appends an entry here so financial corrections stay fully
+    // auditable (who, when, why, what changed).
+    lastEditedAt: { type: Date, default: null },
+    lastEditedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    editHistory: {
+      type: [
+        {
+          editedAt: { type: Date, default: Date.now },
+          editedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          reason: String,
+          changes: mongoose.Schema.Types.Mixed,
+        },
+      ],
+      default: [],
+    },
     cancellationReason: String,
   },
   {
