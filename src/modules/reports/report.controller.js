@@ -149,6 +149,7 @@ export const uploadReport = asyncHandler(async (req, res) => {
     isVisibleToPatient,
     notes,
     tags,
+    descriptions,
   } = req.body;
 
   // Validation
@@ -156,9 +157,9 @@ export const uploadReport = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Patient, title and category are required", 400);
   }
 
-  // Check if file was uploaded
-  if (!req.uploadedFile) {
-    return ApiResponse.error(res, "File is required", 400);
+  // Check if at least one file was uploaded
+  if (!req.uploadedFiles || req.uploadedFiles.length === 0) {
+    return ApiResponse.error(res, "At least one file is required", 400);
   }
 
   // Verify patient exists
@@ -166,6 +167,26 @@ export const uploadReport = asyncHandler(async (req, res) => {
   if (!patientDoc) {
     return ApiResponse.error(res, "Patient not found", 404);
   }
+
+  // descriptions may arrive as a JSON string (FormData) or an array, one per uploaded file
+  let descriptionsArr = [];
+  if (descriptions) {
+    try {
+      descriptionsArr = Array.isArray(descriptions) ? descriptions : JSON.parse(descriptions);
+    } catch {
+      descriptionsArr = [];
+    }
+  }
+
+  const files = req.uploadedFiles.map((f, index) => ({
+    url: f.url,
+    publicId: f.publicId,
+    fileName: f.fileName,
+    fileSize: f.fileSize,
+    fileType: f.fileType,
+    thumbnailUrl: f.thumbnailUrl,
+    description: descriptionsArr[index] || "",
+  }));
 
   // Create report
   const report = await Report.create({
@@ -181,14 +202,7 @@ export const uploadReport = asyncHandler(async (req, res) => {
     isVisibleToPatient: isVisibleToPatient !== "false",
     notes,
     tags: tags ? (Array.isArray(tags) ? tags : tags.split(",").map((t) => t.trim())) : [],
-    file: {
-      url: req.uploadedFile.url,
-      publicId: req.uploadedFile.publicId,
-      fileName: req.uploadedFile.fileName,
-      fileSize: req.uploadedFile.fileSize,
-      fileType: req.uploadedFile.fileType,
-      thumbnailUrl: req.uploadedFile.thumbnailUrl,
-    },
+    files,
     uploadedBy: req.user._id,
   });
 

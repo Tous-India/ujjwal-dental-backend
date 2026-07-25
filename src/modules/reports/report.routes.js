@@ -1,7 +1,7 @@
 import { Router } from "express";
 import * as reportController from "./report.controller.js";
 import { authProtect, anyAuth, patientSelfOrAdmin } from "../../middlewares/auth.middleware.js";
-import { uploadSingle } from "../../middlewares/upload.middleware.js";
+import { uploadSingle, uploadMultiple } from "../../middlewares/upload.middleware.js";
 
 const router = Router();
 
@@ -31,8 +31,8 @@ router.get("/number/:reportNumber", authProtect, reportController.getReportByNum
 // Get single report by ID
 router.get("/:id", anyAuth, reportController.getReportById);
 
-// Upload new report (with file) - Admin
-router.post("/", authProtect, uploadSingle("file"), reportController.uploadReport);
+// Upload new report (up to 10 files, each with its own description) - Admin
+router.post("/", authProtect, uploadMultiple("files", 10), reportController.uploadReport);
 
 // Update report details - Admin
 router.patch("/:id", authProtect, reportController.updateReport);

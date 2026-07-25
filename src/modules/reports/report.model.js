@@ -80,18 +80,14 @@ const reportSchema = new mongoose.Schema(
 
     // -------- File Info (Cloudinary) --------
 
+    // Legacy single-file field -- kept for backward compatibility with
+    // reports uploaded before multi-file support. New uploads use `files` below.
     file: {
       // Cloudinary URL
-      url: {
-        type: String,
-        required: [true, "File URL is required"],
-      },
+      url: String,
 
       // Cloudinary public ID (for deletion)
-      publicId: {
-        type: String,
-        required: [true, "File public ID is required"],
-      },
+      publicId: String,
 
       // Original file name
       fileName: String,
@@ -108,6 +104,20 @@ const reportSchema = new mongoose.Schema(
       // Thumbnail URL (for images)
       thumbnailUrl: String,
     },
+
+    // Multi-file support (up to 10 files per report, each with its own description)
+    files: [
+      {
+        url: { type: String, required: true },
+        publicId: { type: String, required: true },
+        fileName: String,
+        fileSize: Number,
+        fileType: String,
+        thumbnailUrl: String,
+        description: String,
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     // -------- Meta --------
 
