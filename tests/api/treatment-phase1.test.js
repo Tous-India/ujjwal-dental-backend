@@ -17,6 +17,16 @@ describe("Treatment Phase 1: no more auto-complete, Reopen Treatment, editable s
   });
 
   it("T1 (HARD GATE): booking session 2/2 + collecting full balance no longer auto-completes the treatment", async () => {
+    // originatingOpdAppointmentId is now mandatory for new treatment bookings (Bug 2 fix).
+    const t1Opd = await Appointment.create({
+      patient: testData.patient._id,
+      clinic: testData.clinic._id,
+      date: new Date(),
+      timeSlot: "08:00",
+      visitType: "opd",
+      fee: 300,
+      reason: "Initial consult",
+    });
     const parentRes = await request(app)
       .post("/api/appointments")
       .set(authHeader(token))
@@ -32,6 +42,7 @@ describe("Treatment Phase 1: no more auto-complete, Reopen Treatment, editable s
         treatmentName: "Root Canal",
         fee: 5000,
         sessionsPlanned: 2,
+        originatingOpdAppointmentId: String(t1Opd._id),
       });
     expect(parentRes.status).toBe(201);
     const parentId = parentRes.body.data.appointmentId;
@@ -64,7 +75,7 @@ describe("Treatment Phase 1: no more auto-complete, Reopen Treatment, editable s
     expect(parentAfter.treatmentStatus).toBeFalsy(); // stays null/unset -- no auto-complete
     expect(parentAfter.treatmentClosedAt).toBeFalsy();
 
-    await Appointment.deleteMany({ _id: { $in: [parentId, sessionId] } });
+    await Appointment.deleteMany({ _id: { $in: [parentId, sessionId, t1Opd._id] } });
     await Invoice.deleteMany({ patient: testData.patient._id });
   });
 
@@ -197,7 +208,11 @@ describe("Treatment Phase 1: no more auto-complete, Reopen Treatment, editable s
     await Appointment.deleteMany({ _id: { $in: [parent._id, s1._id] } });
   });
 
-  it("T6: optional originatingOpdAppointmentId -- stored when provided (valid, same patient, real OPD visit); stays null when omitted", async () => {
+  it("T6: originatingOpdAppointmentId is stored when provided (valid, same patient, real OPD visit)", async () => {
+    // As of the Bug 2 fix (tests/api/treatment-opd-link-required.test.js),
+    // this field is mandatory for new treatment bookings -- the "stays null
+    // when omitted at create-time" case moved there. This test now covers
+    // just the storage/validation half of Phase 1's original field.
     const opdAppt = await Appointment.create({
       patient: testData.patient._id,
       clinic: testData.clinic._id,
@@ -229,29 +244,7 @@ describe("Treatment Phase 1: no more auto-complete, Reopen Treatment, editable s
     const withLinkSaved = await Appointment.findById(withLinkId).lean();
     expect(String(withLinkSaved.originatingOpdAppointment)).toBe(String(opdAppt._id));
 
-    const withoutLinkRes = await request(app)
-      .post("/api/appointments")
-      .set(authHeader(token))
-      .send({
-        clinic: testData.clinic._id,
-        date: tomorrowStr,
-        timeSlot: "14:00",
-        phone: testData.patient.phone,
-        patientId: testData.patient._id,
-        reason: "Direct booking, no prior OPD",
-        visitType: "treatment",
-        treatmentId: "other",
-        treatmentName: "Filling",
-        fee: 1000,
-      });
-    expect(withoutLinkRes.status).toBe(201);
-    const withoutLinkId = withoutLinkRes.body.data.appointmentId;
-    const withoutLinkSaved = await Appointment.findById(withoutLinkId).lean();
-    expect(withoutLinkSaved.originatingOpdAppointment).toBeFalsy();
-
-    await Appointment.deleteMany({
-      _id: { $in: [opdAppt._id, withLinkId, withoutLinkId] },
-    });
+    await Appointment.deleteMany({ _id: { $in: [opdAppt._id, withLinkId] } });
     await Invoice.deleteMany({ patient: testData.patient._id });
   });
 });

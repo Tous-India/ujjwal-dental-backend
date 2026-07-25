@@ -145,6 +145,17 @@ describe("Admin backdated booking (10-day window, admin-only)", () => {
   });
 
   it("T5: treatment-visitType booking backdates identically to OPD", async () => {
+    // originatingOpdAppointmentId is mandatory for treatment bookings (Bug 2 fix).
+    const opdAppt = await Appointment.create({
+      patient: testData.patient._id,
+      clinic: testData.clinic._id,
+      date: new Date(),
+      timeSlot: "08:00",
+      visitType: "opd",
+      fee: 300,
+      reason: "Initial consult",
+    });
+
     const res = await request(app)
       .post("/api/appointments")
       .set(authHeader(adminToken))
@@ -161,6 +172,7 @@ describe("Admin backdated booking (10-day window, admin-only)", () => {
         fee: 5000,
         reason: "Backdated treatment booking",
         source: "walk_in",
+        originatingOpdAppointmentId: String(opdAppt._id),
       });
 
     expect(res.status).toBe(201);

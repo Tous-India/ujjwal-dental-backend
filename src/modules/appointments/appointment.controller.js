@@ -299,6 +299,7 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     Appointment.find(filter)
       .populate("patient", "name phone")
       .populate("clinic", "name code")
+      .populate("originatingOpdAppointment", "appointmentNumber date")
       .populate("treatmentId", "name")
       .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus items discount")
       .sort({ date: -1, timeSlot: 1 })
@@ -804,10 +805,15 @@ export const createAppointment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Cannot mark payment as collected for a zero-fee appointment", 400);
   }
 
-  // Optional link to the OPD visit a treatment originated from -- not required.
-  // If provided, it must reference a real OPD-type appointment for the SAME patient.
+  // Link to the OPD visit a treatment originated from -- MANDATORY for new
+  // "treatment" bookings only (not opd, not treatment_session -- that branch
+  // returns earlier above). Existing treatments predating this requirement
+  // are untouched; this only gates the CREATE path going forward.
   let resolvedOriginatingOpd = null;
-  if (originatingOpdAppointmentId) {
+  if (appointmentVisitType === "treatment") {
+    if (!originatingOpdAppointmentId) {
+      return ApiResponse.error(res, "An OPD visit must be linked to book a treatment", 400);
+    }
     if (!mongoose.Types.ObjectId.isValid(originatingOpdAppointmentId)) {
       return ApiResponse.error(res, "Invalid originatingOpdAppointmentId", 400);
     }
