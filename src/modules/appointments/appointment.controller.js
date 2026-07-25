@@ -251,8 +251,12 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     filter.patient = patient;
   }
 
-  if (status) {
-    filter.status = status;
+  if (status && status !== "all") {
+    if (status.includes(",")) {
+      filter.status = { $in: status.split(",").map((s) => s.trim()) };
+    } else {
+      filter.status = status;
+    }
   }
 
   if (appointmentType) {
