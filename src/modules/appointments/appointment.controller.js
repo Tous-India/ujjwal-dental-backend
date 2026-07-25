@@ -234,13 +234,21 @@ export const getStaleTreatments = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const getAllAppointments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType, search } = req.query;
+  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType, search, parentAppointment, patient } = req.query;
 
   // 1. Build filter query from params
   const filter = {};
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     filter.clinic = clinic;
+  }
+
+  if (parentAppointment && mongoose.Types.ObjectId.isValid(parentAppointment)) {
+    filter.parentAppointment = parentAppointment;
+  }
+
+  if (patient && mongoose.Types.ObjectId.isValid(patient)) {
+    filter.patient = patient;
   }
 
   if (status) {
