@@ -4,7 +4,6 @@ import { notify } from "../../utils/notifyHelper.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Appointment from "../appointments/appointment.model.js";
-import { checkAndAutoCompleteTreatment } from "../appointments/appointment.controller.js";
 import Patient from "../patients/patient.model.js";
 import MembershipPlan from "../memberships/membership.model.js";
 import { TreatmentMaster } from "../treatments/treatment.model.js";
@@ -1787,13 +1786,6 @@ export const collectPayment = asyncHandler(async (req, res) => {
   });
 
   await payment.save();
-
-  // This payment may have just paid off a treatment's invoice in full — if
-  // its sessions are also all booked, auto-complete instead of waiting for
-  // a manual Close Treatment Plan action.
-  if (invoice.balanceDue === 0 && invoice.appointment) {
-    await checkAndAutoCompleteTreatment(invoice.appointment);
-  }
 
   return ApiResponse.success(
     res,
