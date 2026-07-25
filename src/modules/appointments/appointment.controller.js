@@ -34,6 +34,17 @@ const MIN_BACKDATE_DAYS = 10;
 const canBackdate = (user) =>
   !!user && ["admin", "clinic_manager"].includes(user.role);
 
+// Maps appointment.paymentMethod's enum (cash/online/free) to
+// Payment.paymentMode's enum (cash/card/upi/razorpay/netbanking/other) --
+// the two fields are on different schemas with different allowed values,
+// same mismatch already handled in membership.controller.js's
+// toPaymentMode() for the same reason.
+const toPaymentMode = (method) => {
+  if (method === "cash") return "cash";
+  if (method === "online") return "razorpay";
+  return "other";
+};
+
 /**
  * Effective seats for a slot given the incoming booking type:
  *  - "emergency" → SLOT_BASE_CAPACITY + EMERGENCY_EXTRA (e.g. 3)
@@ -1446,6 +1457,7 @@ export const updateAppointment = asyncHandler(async (req, res) => {
       const invoice = await Invoice.findById(appointment.invoice);
       if (invoice) {
         let invoiceDirty = false;
+        let paymentDelta = 0; // > 0 only when this request genuinely marks new money as collected
 
         // Update invoice line-item price when fee changes
         if ((fee !== undefined || opdFee !== undefined) && invoice.items?.length > 0) {
@@ -1456,6 +1468,7 @@ export const updateAppointment = asyncHandler(async (req, res) => {
         }
 
         // Sync amountPaid to the (possibly recalculated) grandTotal
+        const previousAmountPaid = invoice.amountPaid || 0;
         if (paymentStatus !== undefined || paymentMethod !== undefined || isFree !== undefined) {
           const newPS = appointment.paymentStatus;
           if (newPS === "free") {
@@ -1463,6 +1476,7 @@ export const updateAppointment = asyncHandler(async (req, res) => {
             invoice.paymentMethod = "free";
           } else if (newPS === "paid") {
             invoice.amountPaid = invoice.grandTotal;
+            paymentDelta = Math.max(0, invoice.amountPaid - previousAmountPaid);
           } else {
             invoice.amountPaid = 0;
           }
@@ -1471,6 +1485,34 @@ export const updateAppointment = asyncHandler(async (req, res) => {
 
         if (invoiceDirty) {
           await invoice.save(); // pre-save hook re-runs calculateTotals and sets paymentStatus
+        }
+
+        // Previously this block only mutated the Invoice document directly --
+        // zero Payment ledger entry was ever created for money marked "paid"
+        // through this path (confirmed via a real incident: invoice.amountPaid
+        // set here with no backing Payment record, invisible until Billing
+        // started live-recomputing amountPaid from real Payment data). Mirrors
+        // the exact settledInvoices-only pattern already proven in
+        // recordPayment/bookAppointmentWithPayment/the membership functions --
+        // never sets payment.invoice (would double-apply via the post-save
+        // hook, since amountPaid is already set once above).
+        if (paymentDelta > 0) {
+          await Payment.create({
+            patient: invoice.patient,
+            amount: paymentDelta,
+            paymentMode: toPaymentMode(appointment.paymentMethod),
+            type: appointment.visitType === "treatment" ? "treatment" : "opd_fee",
+            status: "paid",
+            settledInvoices: [
+              {
+                invoiceId: invoice._id,
+                invoiceNumber: invoice.invoiceNumber,
+                appliedAmount: paymentDelta,
+                previousAmountPaid,
+              },
+            ],
+            recordedBy: req.user?._id,
+          });
         }
       }
     }
