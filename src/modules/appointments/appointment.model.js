@@ -123,6 +123,27 @@ const appointmentSchema = new mongoose.Schema(
     treatmentClosedAt: { type: Date, default: null },
     treatmentClosedReason: { type: String, default: null },
 
+    // Optional link to the OPD visit a treatment originated from -- nullable,
+    // not enforced (many treatments are booked directly, with no prior tracked consult).
+    originatingOpdAppointment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Appointment",
+      default: null,
+    },
+
+    // Append-only audit trail across close/reopen cycles for treatment appointments.
+    // Past entries are never deleted or overwritten -- reopening preserves the
+    // original closure's record alongside the new "reopened" entry.
+    treatmentHistory: [
+      {
+        action: { type: String, enum: ["closed", "reopened"] },
+        resolution: String,
+        reason: String,
+        performedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        performedAt: { type: Date, default: Date.now },
+      },
+    ],
+
     // Treatment (catalog) for treatment visits — nullable for OPD visits.
     treatmentId: {
       type: mongoose.Schema.Types.ObjectId,
