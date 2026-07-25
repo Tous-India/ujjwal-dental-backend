@@ -545,6 +545,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     paymentMethod: incomingPaymentMethod,
     parentAppointment, sessionNumber, sessionsPlanned,
     amountPaid: requestAmountPaid,
+    originatingOpdAppointmentId,
   } = req.body;
 
   // Urgency: accept `bookingType` (preferred) or legacy `appointmentType`.
@@ -698,11 +699,6 @@ export const createAppointment = asyncHandler(async (req, res) => {
       createdBy: req.user?._id,
     });
 
-    // This session may be the last one needed — if the invoice is already
-    // paid off, auto-complete the treatment right away instead of waiting
-    // for a manual Close Treatment Plan action.
-    await checkAndAutoCompleteTreatment(parent._id);
-
     dispatchBookingNotifications(sessionAppt._id);
 
     const populated = await Appointment.findById(sessionAppt._id)
@@ -796,6 +792,26 @@ export const createAppointment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Cannot mark payment as collected for a zero-fee appointment", 400);
   }
 
+  // Optional link to the OPD visit a treatment originated from -- not required.
+  // If provided, it must reference a real OPD-type appointment for the SAME patient.
+  let resolvedOriginatingOpd = null;
+  if (originatingOpdAppointmentId) {
+    if (!mongoose.Types.ObjectId.isValid(originatingOpdAppointmentId)) {
+      return ApiResponse.error(res, "Invalid originatingOpdAppointmentId", 400);
+    }
+    const opdAppt = await Appointment.findById(originatingOpdAppointmentId).lean();
+    if (!opdAppt) {
+      return ApiResponse.error(res, "Originating OPD appointment not found", 404);
+    }
+    if (opdAppt.visitType !== "opd") {
+      return ApiResponse.error(res, "originatingOpdAppointmentId must reference an OPD-type appointment", 400);
+    }
+    if (opdAppt.patient.toString() !== patient._id.toString()) {
+      return ApiResponse.error(res, "Originating OPD appointment must belong to the same patient", 400);
+    }
+    resolvedOriginatingOpd = originatingOpdAppointmentId;
+  }
+
   /* =======================
      CREATE APPOINTMENT
      (NO status, NO tokenNumber)
@@ -821,6 +837,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
     ...(appointmentVisitType === "treatment" && sessionsPlanned
       ? { sessionsPlanned: Number(sessionsPlanned) }
       : {}),
+    ...(resolvedOriginatingOpd ? { originatingOpdAppointment: resolvedOriginatingOpd } : {}),
     fee: resolvedFee,
     feeNotes: feeNotes || undefined,
     // opdFee kept in sync for backward-compatibility with existing views
@@ -1327,6 +1344,7 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     endTime,
     paymentMethod,
     paymentStatus,
+    sessionsPlanned,
   } = req.body;
 
   /* =======================
@@ -1418,6 +1436,25 @@ export const updateAppointment = asyncHandler(async (req, res) => {
   }
   if (treatmentId !== undefined) appointment.treatmentId = treatmentId || null;
   if (treatmentName !== undefined) appointment.treatmentName = treatmentName || "";
+  if (sessionsPlanned !== undefined) {
+    const newSessionsPlanned = Number(sessionsPlanned);
+    if (!newSessionsPlanned || newSessionsPlanned < 1) {
+      return ApiResponse.error(res, "sessionsPlanned must be a positive number", 400);
+    }
+    const sessionsBookedCount =
+      (await Appointment.countDocuments({
+        parentAppointment: appointment._id,
+        status: { $ne: "cancelled" },
+      })) + 1; // parent = Session 1
+    if (newSessionsPlanned < sessionsBookedCount) {
+      return ApiResponse.error(
+        res,
+        `Cannot set sessionsPlanned below the ${sessionsBookedCount} sessions already booked`,
+        400
+      );
+    }
+    appointment.sessionsPlanned = newSessionsPlanned;
+  }
   if (isFree !== undefined) {
     appointment.isFree = isFree;
     // Auto-derive paymentStatus unless an explicit override arrives later in body
@@ -2013,6 +2050,13 @@ export const closeTreatmentPlan = asyncHandler(async (req, res) => {
   parent.treatmentStatus = statusMap[resolution];
   parent.treatmentClosedAt = new Date();
   parent.treatmentClosedReason = reason.trim();
+  parent.treatmentHistory.push({
+    action: "closed",
+    resolution: statusMap[resolution],
+    reason: reason.trim(),
+    performedBy: req.user._id,
+    performedAt: new Date(),
+  });
   // status is the single unified "is this row done" signal driving list
   // visibility — any closure resolution (completed/abandoned/closed_early)
   // counts as "completed" from a list-visibility standpoint.
@@ -2052,4 +2096,48 @@ export const closeTreatmentPlan = asyncHandler(async (req, res) => {
     },
     "Treatment plan closed",
   );
+});
+
+/**
+ * @desc    Reopen a previously closed treatment -- admin/clinic_manager only,
+ *          mandatory reason, full audit trail preserved (never deletes/overwrites
+ *          past treatmentHistory entries).
+ * @route   POST /api/appointments/:id/reopen-treatment
+ * @access  Admin / Clinic Manager
+ */
+export const reopenTreatment = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  if (!canBackdate(req.user)) {
+    return ApiResponse.error(res, "Only admin or clinic manager can reopen a treatment", 403);
+  }
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid appointment ID", 400);
+  }
+  if (!reason || reason.trim().length < 10) {
+    return ApiResponse.error(res, "A reason of at least 10 characters is required to reopen a treatment", 400);
+  }
+
+  const parent = await Appointment.findById(id);
+  if (!parent) return ApiResponse.error(res, "Appointment not found", 404);
+  if (parent.visitType !== "treatment") {
+    return ApiResponse.error(res, "Can only reopen treatment appointments", 400);
+  }
+  if (!parent.treatmentStatus) {
+    return ApiResponse.error(res, "Treatment is not closed", 400);
+  }
+
+  parent.treatmentStatus = null;
+  parent.treatmentClosedAt = null;
+  parent.treatmentHistory.push({
+    action: "reopened",
+    reason: reason.trim(),
+    performedBy: req.user._id,
+    performedAt: new Date(),
+  });
+  await parent.save();
+
+  const updated = await Appointment.findById(id).populate("patient", "name phone");
+  return ApiResponse.success(res, { appointment: updated }, "Treatment reopened");
 });

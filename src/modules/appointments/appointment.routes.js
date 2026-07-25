@@ -89,6 +89,9 @@ router.post("/:id/reschedule", authProtect, appointmentController.rescheduleAppo
 // Close treatment plan (cancel remaining sessions + reconcile invoice) — admin / clinic manager
 router.post("/:id/close-treatment", authProtect, checkPermission("appointments", "edit"), appointmentController.closeTreatmentPlan);
 
+// Reopen a closed treatment (mandatory reason, full audit trail) — admin / clinic manager
+router.post("/:id/reopen-treatment", authProtect, checkPermission("appointments", "edit"), appointmentController.reopenTreatment);
+
 // Delete appointment permanently — admin / clinic manager
 router.delete("/:id", authProtect, checkPermission("appointments", "delete"), appointmentController.deleteAppointment);
 
