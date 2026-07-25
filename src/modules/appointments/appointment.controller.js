@@ -296,7 +296,7 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
       .populate("patient", "name phone")
       .populate("clinic", "name code")
       .populate("treatmentId", "name")
-      .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus")
+      .populate("invoice", "invoiceNumber grandTotal amountPaid balanceDue paymentStatus items discount")
       .sort({ date: -1, timeSlot: 1 })
       .skip(skip)
       .limit(Number(limit)),
