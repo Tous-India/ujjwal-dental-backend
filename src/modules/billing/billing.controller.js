@@ -1416,12 +1416,46 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
         paymentMethod: paymentMode,
         paymentStatus: inv.paymentStatus,
         grandTotal: inv.grandTotal,
+        // No settledInvoices to derive a running balance from -- legacy
+        // pre-write-path-fix invoice, not a real Payment record.
+        dueAfterThisPayment: null,
       };
     });
+
+  // Running Dues balance -- grandTotal minus the CUMULATIVE amount paid as of
+  // this specific payment (previousAmountPaid + appliedAmount, both captured
+  // by settledInvoices at write time), not a flat per-row calculation. Only
+  // the PRIMARY (first) settled invoice is used when a payment somehow
+  // settles more than one -- keeps this a single running number per row
+  // rather than an ambiguous combined figure.
+  const settledInvoiceIds = [
+    ...new Set(
+      rawPayments
+        .map((p) => p.settledInvoices?.[0]?.invoiceId)
+        .filter(Boolean)
+        .map(String)
+    ),
+  ];
+  const settledInvoicesGrandTotals = settledInvoiceIds.length
+    ? await Invoice.find({ _id: { $in: settledInvoiceIds } }).select("grandTotal").lean()
+    : [];
+  const grandTotalByInvoiceId = Object.fromEntries(
+    settledInvoicesGrandTotals.map((inv) => [String(inv._id), inv.grandTotal])
+  );
 
   const paymentEntries = rawPayments.map((p) => {
     let paymentMode = p.paymentMode || "cash";
     if (paymentMode === "pay-at-clinic") paymentMode = "cash";
+
+    const primarySettlement = p.settledInvoices?.[0];
+    let dueAfterThisPayment = null;
+    if (primarySettlement) {
+      const grandTotal = grandTotalByInvoiceId[String(primarySettlement.invoiceId)];
+      if (grandTotal !== undefined) {
+        const cumulativePaid = (primarySettlement.previousAmountPaid || 0) + (primarySettlement.appliedAmount || 0);
+        dueAfterThisPayment = Math.max(0, grandTotal - cumulativePaid);
+      }
+    }
 
     return {
       _id: p._id,
@@ -1432,6 +1466,7 @@ export const getMyPaymentHistory = asyncHandler(async (req, res) => {
       paymentMethod: paymentMode,
       paymentStatus: "paid",
       grandTotal: p.invoice?.grandTotal ?? p.amount,
+      dueAfterThisPayment,
     };
   });
 
