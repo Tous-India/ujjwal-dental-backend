@@ -48,11 +48,14 @@ const MODE_LABELS = {
  * Builds a MongoDB filter query from payment list params.
  * Shared by getAllPayments and exportPaymentsPdf so filter logic never diverges.
  */
-const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, to } = {}) => {
+const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, to, appointment } = {}) => {
   const query = {};
 
   if (patient && mongoose.Types.ObjectId.isValid(patient)) {
     query.patient = patient;
+  }
+  if (appointment && mongoose.Types.ObjectId.isValid(appointment)) {
+    query.appointment = appointment;
   }
   if (status) {
     if (status.includes(",")) {
@@ -87,7 +90,7 @@ const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, t
  * @access  Admin
  */
 export const getAllPayments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentMode, type, clinic, from, to, search } = req.query;
+  const { page = 1, limit = 10, patient, status, paymentMode, type, clinic, from, to, search, appointment } = req.query;
 
   // Payment has no name/phone of its own — search resolves to matching
   // Patient _ids first, then filters payments by those ids (mirrors the
@@ -108,7 +111,7 @@ export const getAllPayments = asyncHandler(async (req, res) => {
     }
   }
 
-  const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to });
+  const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to, appointment });
   if (searchPatientIds) {
     // A specific patient id filter combined with search must AND correctly —
     // narrow to the intersection rather than letting one silently override
@@ -1709,11 +1712,24 @@ export const reverseAdminPayment = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const collectPayment = asyncHandler(async (req, res) => {
-  const { invoiceId, amount, mode, reference, notes } = req.body;
+  const { invoiceId, amount, mode, reference, notes, appointmentId } = req.body;
   const adminId = req.user._id;
 
   if (!invoiceId || !mongoose.Types.ObjectId.isValid(invoiceId)) {
     return ApiResponse.error(res, "Valid invoiceId is required", 400);
+  }
+
+  // Optional link to the SPECIFIC appointment (e.g. a treatment_session) this
+  // payment was actually collected for -- lets the Treatments tab's session
+  // timeline show the amount collected AT that session, not the invoice's
+  // shared cumulative total. Purely additive; when omitted, behaves exactly
+  // as before (a general invoice-level payment with no per-appointment tie).
+  let resolvedAppointmentId = null;
+  if (appointmentId) {
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return ApiResponse.error(res, "Invalid appointmentId", 400);
+    }
+    resolvedAppointmentId = appointmentId;
   }
 
   const numAmount = Number(amount);
@@ -1774,6 +1790,7 @@ export const collectPayment = asyncHandler(async (req, res) => {
     referenceNumber: reference || undefined,
     notes: notes || undefined,
     recordedBy: adminId,
+    ...(resolvedAppointmentId ? { appointment: resolvedAppointmentId } : {}),
     settledInvoices: [
       {
         invoiceId: invoice._id,
