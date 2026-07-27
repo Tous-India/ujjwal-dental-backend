@@ -56,8 +56,9 @@ router.get("/upcoming", authProtect, appointmentController.getUpcomingAppointmen
 // Get stale (stalled) treatments — dashboard flag list — staff/admin
 router.get("/stale-treatments", authProtect, appointmentController.getStaleTreatments);
 
-// Get available slots (for booking) — public
-router.get("/available-slots", appointmentController.getAvailableSlots);
+// Get available slots (for booking) — public; optionalAuth lets admin/clinic_manager
+// see slots for backdated dates (same allowance as createAppointment)
+router.get("/available-slots", optionalAuth, appointmentController.getAvailableSlots);
 
 // Create new appointment (book) — public; optionalAuth records staff id when present
 router.post("/", optionalAuth, appointmentController.createAppointment);

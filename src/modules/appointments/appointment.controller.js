@@ -455,12 +455,28 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     (slot) => (slotCounts[slot] || 0) < capacity
   );
 
-  // Past dates have no available slots at all.
+  // Past dates: blocked entirely UNLESS the caller is staff with backdating
+  // rights (admin/clinic_manager, within the same MIN_BACKDATE_DAYS window
+  // createAppointment enforces) -- this endpoint previously had no such
+  // allowance at all, so every slot on ANY non-today date looked "already
+  // passed" by simple time-of-day comparison, blocking backdated bookings
+  // entirely even after the booking-validation endpoint was fixed to allow them.
   const now = new Date();
   const todayStart = new Date(now);
   todayStart.setHours(0, 0, 0, 0);
   if (startOfDay < todayStart) {
-    availableSlots = [];
+    if (canBackdate(req.user)) {
+      const earliestBackdate = new Date(todayStart);
+      earliestBackdate.setDate(earliestBackdate.getDate() - MIN_BACKDATE_DAYS);
+      if (startOfDay < earliestBackdate) {
+        availableSlots = [];
+      }
+      // else: within the backdate window -- full slot range stays available,
+      // capacity filtering above already applied. The "already passed" time
+      // check only makes sense for today, never for a past day.
+    } else {
+      availableSlots = [];
+    }
   } else if (requestedDate.toDateString() === now.toDateString()) {
     // Today: drop slots that have already passed.
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
