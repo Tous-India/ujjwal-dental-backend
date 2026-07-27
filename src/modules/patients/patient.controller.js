@@ -545,6 +545,7 @@ export const getPatientTreatments = asyncHandler(async (req, res) => {
     // Parent appointment is implicitly the first session (same convention
     // used admin-side), plus every linked treatment_session child.
     sessions: [{ status: a.status }, ...(sessionsByParent[String(a._id)] || [])],
+    sessionsPlanned: a.sessionsPlanned || null,
     cost: a.invoice?.grandTotal ?? a.fee ?? 0,
     status: treatmentStatusToPortalStatus(a.treatmentStatus),
   }));
