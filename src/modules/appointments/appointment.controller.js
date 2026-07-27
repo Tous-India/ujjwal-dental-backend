@@ -234,7 +234,7 @@ export const getStaleTreatments = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const getAllAppointments = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType, search, parentAppointment, patient } = req.query;
+  const { page = 1, limit = 10, date, clinic, status, appointmentType, visitType, search, parentAppointment, patient, treatmentStatus } = req.query;
 
   // 1. Build filter query from params
   const filter = {};
@@ -257,6 +257,15 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     } else {
       filter.status = status;
     }
+  }
+
+  // Treatments-tab-only filter, scoped to the collapsed per-plan row model:
+  // "active" = still open (treatmentStatus unset), "completed" = closed
+  // under any resolution, "all" = no filter applied.
+  if (treatmentStatus === "active") {
+    filter.treatmentStatus = { $in: [null, undefined] };
+  } else if (treatmentStatus === "completed") {
+    filter.treatmentStatus = { $nin: [null, undefined] };
   }
 
   if (appointmentType) {
