@@ -465,6 +465,17 @@ export const getPatientAppointments = asyncHandler(async (req, res) => {
  * @route   GET /api/patients/:id/treatments
  * @access  Admin
  */
+/**
+ * Maps an Appointment's treatmentStatus (null/completed/closed_early/abandoned)
+ * onto the patient portal's older status vocabulary (planned/in_progress/
+ * completed/cancelled/on_hold) so the existing frontend table needs no changes.
+ */
+const treatmentStatusToPortalStatus = (treatmentStatus) => {
+  if (!treatmentStatus) return "in_progress";
+  if (treatmentStatus === "completed") return "completed";
+  return "cancelled"; // closed_early / abandoned -- both read as "not completed, no longer active"
+};
+
 export const getPatientTreatments = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { status, page = 1, limit = 10 } = req.query;
@@ -475,24 +486,74 @@ export const getPatientTreatments = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Patient not found", 404);
   }
 
-  // Build query
-  const query = { patient: id };
+  // Treatments now live as Appointment documents (visitType: "treatment") --
+  // the standalone Treatment collection this endpoint used to read from is
+  // no longer written to by any booking path (admin or patient), so it was
+  // silently empty for every patient regardless of how many real treatments
+  // they had. Reconnected to the real data source; deliberately separate
+  // from admin's getAllAppointments (Treatments-tab collapse) query logic,
+  // which has its own filtering semantics for a different (admin) need.
+  const query = { patient: id, visitType: "treatment" };
+
+  // The portal's status filter maps onto treatmentStatus AFTER reshaping
+  // (see treatmentStatusToPortalStatus below), not a raw Mongo field -- so
+  // when a status filter is present, fetch all matching appointments and
+  // paginate in-memory after filtering, rather than skip/limit at the DB
+  // level (which would paginate before the filter and miscount `total`).
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const baseQuery = Appointment.find(query)
+    .populate("treatmentId", "name category price")
+    .populate("clinic", "name code")
+    .populate("invoice", "grandTotal amountPaid balanceDue")
+    .sort({ createdAt: -1 });
+
+  let appointments, total;
   if (status) {
-    query.status = status;
+    appointments = await baseQuery.lean();
+    total = null; // computed after filtering below
+  } else {
+    [appointments, total] = await Promise.all([
+      baseQuery.skip(skip).limit(parseInt(limit)).lean(),
+      Appointment.countDocuments(query),
+    ]);
   }
 
-  // Get treatments
-  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const appointmentIds = appointments.map((a) => a._id);
+  const sessions = appointmentIds.length
+    ? await Appointment.find({
+        parentAppointment: { $in: appointmentIds },
+        visitType: "treatment_session",
+      })
+        .select("parentAppointment status")
+        .lean()
+    : [];
+  const sessionsByParent = {};
+  for (const s of sessions) {
+    const key = String(s.parentAppointment);
+    (sessionsByParent[key] ||= []).push({ status: s.status });
+  }
 
-  const [treatments, total] = await Promise.all([
-    Treatment.find(query)
-      .populate("treatmentType", "name category price")
-      .populate("clinic", "name code")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit)),
-    Treatment.countDocuments(query),
-  ]);
+  let treatments = appointments.map((a) => ({
+    _id: a._id,
+    name: a.treatmentName || a.treatmentId?.name || "Treatment",
+    treatmentType: a.treatmentId
+      ? { name: a.treatmentId.name, category: a.treatmentId.category, price: a.treatmentId.price }
+      : null,
+    clinic: a.clinic,
+    startDate: a.createdAt,
+    createdAt: a.createdAt,
+    // Parent appointment is implicitly the first session (same convention
+    // used admin-side), plus every linked treatment_session child.
+    sessions: [{ status: a.status }, ...(sessionsByParent[String(a._id)] || [])],
+    cost: a.invoice?.grandTotal ?? a.fee ?? 0,
+    status: treatmentStatusToPortalStatus(a.treatmentStatus),
+  }));
+
+  if (status) {
+    treatments = treatments.filter((t) => t.status === status);
+    total = treatments.length;
+    treatments = treatments.slice(skip, skip + parseInt(limit));
+  }
 
   ApiResponse.paginated(res, treatments, {
     page: parseInt(page),
