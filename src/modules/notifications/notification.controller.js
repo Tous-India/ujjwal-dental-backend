@@ -5,6 +5,7 @@ import Notification from "./notification.model.js";
 import Patient from "../patients/patient.model.js";
 import User from "../users/user.model.js";
 import mongoose from "mongoose";
+import { parseIstDateRange } from "../../utils/istDateRange.js";
 
 /**
  * NOTIFICATION CONTROLLER
@@ -503,13 +504,7 @@ export const getAllNotificationsAdmin = asyncHandler(async (req, res) => {
   }
 
   if (from || to) {
-    query.createdAt = {};
-    if (from) {
-      query.createdAt.$gte = new Date(from);
-    }
-    if (to) {
-      query.createdAt.$lte = new Date(to);
-    }
+    query.createdAt = parseIstDateRange(from, to);
   }
 
   // Pagination
@@ -542,8 +537,9 @@ export const getNotificationStats = asyncHandler(async (req, res) => {
   const { from, to } = req.query;
 
   // Date range (default: last 30 days)
-  const startDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const endDate = to ? new Date(to) : new Date();
+  const istRange = parseIstDateRange(from, to);
+  const startDate = istRange.$gte || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const endDate = istRange.$lte || new Date();
 
   const stats = await Notification.aggregate([
     {

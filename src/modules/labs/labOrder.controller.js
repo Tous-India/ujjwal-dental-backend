@@ -4,6 +4,7 @@ import LabOrder from "./labOrder.model.js";
 import Lab from "./lab.model.js";
 import Patient from "../patients/patient.model.js";
 import mongoose from "mongoose";
+import { parseIstDateRange } from "../../utils/istDateRange.js";
 
 /**
  * LAB ORDER CONTROLLER (admin-only)
@@ -42,9 +43,7 @@ export const getAllLabOrders = asyncHandler(async (req, res) => {
   query.archived = archived === "true";
 
   if (from || to) {
-    query.orderDate = {};
-    if (from) query.orderDate.$gte = new Date(from);
-    if (to) query.orderDate.$lte = new Date(to);
+    query.orderDate = parseIstDateRange(from, to);
   }
 
   if (search) {
@@ -87,9 +86,7 @@ export const getLabOrderStats = asyncHandler(async (req, res) => {
 
   const dateMatch = { archived: false };
   if (from || to) {
-    dateMatch.orderDate = {};
-    if (from) dateMatch.orderDate.$gte = new Date(from);
-    if (to) dateMatch.orderDate.$lte = new Date(to);
+    dateMatch.orderDate = parseIstDateRange(from, to);
   }
 
   const now = new Date();

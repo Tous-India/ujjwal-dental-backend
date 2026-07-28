@@ -5,6 +5,7 @@ import Patient from "../patients/patient.model.js";
 import Payment from "../payments/payment.model.js";
 import mongoose from "mongoose";
 import PDFDocument from "pdfkit";
+import { parseIstDateRange } from "../../utils/istDateRange.js";
 
 /**
  * BILLING CONTROLLER
@@ -79,15 +80,9 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
     query["items.itemType"] = itemType;
   }
 
-  // Date range filter
+  // Date range filter -- IST calendar-day boundaries, not UTC-midnight-anchored
   if (from || to) {
-    query.invoiceDate = {};
-    if (from) {
-      query.invoiceDate.$gte = new Date(from);
-    }
-    if (to) {
-      query.invoiceDate.$lte = new Date(to);
-    }
+    query.invoiceDate = parseIstDateRange(from, to);
   }
 
   // Pagination
@@ -966,9 +961,9 @@ export const getBillingStats = asyncHandler(async (req, res) => {
   let startDate = null;
   let endDate = null;
   if (from || to) {
-    matchQuery.invoiceDate = {};
-    if (from) { startDate = new Date(from); matchQuery.invoiceDate.$gte = startDate; }
-    if (to) { endDate = new Date(to); matchQuery.invoiceDate.$lte = endDate; }
+    matchQuery.invoiceDate = parseIstDateRange(from, to);
+    startDate = matchQuery.invoiceDate.$gte || null;
+    endDate = matchQuery.invoiceDate.$lte || null;
   }
 
   if (patient && mongoose.Types.ObjectId.isValid(patient)) {

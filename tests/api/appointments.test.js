@@ -3,6 +3,7 @@ import request from "supertest";
 import app from "../../app.js";
 import { getAdminToken, getPatientToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
+import Patient from "../../src/modules/patients/patient.model.js";
 
 describe("Appointment Lifecycle", () => {
   let token;
@@ -63,13 +64,22 @@ describe("Appointment Lifecycle", () => {
   });
 
   it("POST /api/appointments - allows up to 2 bookings per slot, then rejects the 3rd", async () => {
-    const book = () =>
+    // Distinct patients per booking -- capacity is about different people
+    // filling a slot; the same patient booking twice would now correctly be
+    // rejected by the 4-hour same-patient OPD gap rule before ever reaching
+    // the capacity check.
+    const capacityPatients = await Patient.create([
+      { name: "Capacity Test A", phone: "9000000001" },
+      { name: "Capacity Test B", phone: "9000000002" },
+      { name: "Capacity Test C", phone: "9000000003" },
+    ]);
+    const book = (patient) =>
       request(app)
         .post("/api/appointments")
         .set(authHeader(token))
         .send({
-          patientId: testData.patient._id.toString(),
-          phone: testData.patient.phone,
+          patientId: patient._id.toString(),
+          phone: patient.phone,
           clinic: testData.clinic._id.toString(),
           date: tomorrowStr,
           timeSlot: "10:00",
@@ -77,14 +87,16 @@ describe("Appointment Lifecycle", () => {
           reason: "Capacity test",
         });
 
-    // 1st and 2nd bookings fill the slot to capacity (2)
-    expect((await book()).status).toBe(201);
-    expect((await book()).status).toBe(201);
+    // 1st and 2nd bookings (different patients) fill the slot to capacity (2)
+    expect((await book(capacityPatients[0])).status).toBe(201);
+    expect((await book(capacityPatients[1])).status).toBe(201);
 
-    // 3rd booking must be rejected — slot is full
-    const third = await book();
+    // 3rd booking (a 3rd distinct patient) must be rejected — slot is full
+    const third = await book(capacityPatients[2]);
     expect(third.status).toBe(409);
     expect(third.body.success).toBe(false);
+
+    await Patient.deleteMany({ _id: { $in: capacityPatients.map((p) => p._id) } });
   });
 
   it("POST /api/appointments - admin can book yesterday (within the 10-day backdate window)", async () => {

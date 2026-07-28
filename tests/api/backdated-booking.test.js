@@ -4,6 +4,7 @@ import app from "../../app.js";
 import { getAdminToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
 import Appointment from "../../src/modules/appointments/appointment.model.js";
+import Patient from "../../src/modules/patients/patient.model.js";
 
 describe("Admin backdated booking (10-day window, admin-only)", () => {
   let adminToken;
@@ -118,15 +119,22 @@ describe("Admin backdated booking (10-day window, admin-only)", () => {
   });
 
   it("T4: slot capacity still enforced for backdated entries", async () => {
+    // Distinct patients -- the same patient booking twice would now
+    // correctly be rejected by the 4-hour same-patient OPD gap rule first.
+    const capacityPatients = await Patient.create([
+      { name: "Backdated Capacity A", phone: "9000000011" },
+      { name: "Backdated Capacity B", phone: "9000000012" },
+      { name: "Backdated Capacity C", phone: "9000000013" },
+    ]);
     const date = daysAgo(5);
     const timeSlot = "14:00";
-    const book = () =>
+    const book = (patient) =>
       request(app)
         .post("/api/appointments")
         .set(authHeader(adminToken))
         .send({
-          patientId: testData.patient._id.toString(),
-          phone: testData.patient.phone,
+          patientId: patient._id.toString(),
+          phone: patient.phone,
           clinic: testData.clinic._id.toString(),
           date,
           timeSlot,
@@ -135,13 +143,15 @@ describe("Admin backdated booking (10-day window, admin-only)", () => {
           source: "walk_in",
         });
 
-    const r1 = await book();
-    const r2 = await book();
-    const r3 = await book(); // 3rd regular booking in the same slot -> capacity 2, should be rejected
+    const r1 = await book(capacityPatients[0]);
+    const r2 = await book(capacityPatients[1]);
+    const r3 = await book(capacityPatients[2]); // 3rd booking in the same slot -> capacity 2, should be rejected
 
     expect(r1.status).toBe(201);
     expect(r2.status).toBe(201);
     expect(r3.status).toBe(409);
+
+    await Patient.deleteMany({ _id: { $in: capacityPatients.map((p) => p._id) } });
   });
 
   it("T5: treatment-visitType booking backdates identically to OPD", async () => {

@@ -4,6 +4,7 @@ import { notify } from "../../utils/notifyHelper.js";
 import FollowUpReminder from "./followup.model.js";
 import Patient from "../patients/patient.model.js";
 import mongoose from "mongoose";
+import { parseIstDateRange } from "../../utils/istDateRange.js";
 
 /**
  * FOLLOW-UP REMINDER CONTROLLER (admin-only CRUD + patient read)
@@ -99,8 +100,7 @@ export const getFollowUps = asyncHandler(async (req, res) => {
   if (from || to || upcoming === "true") {
     query.followUpDate = {};
     if (upcoming === "true") query.followUpDate.$gte = new Date();
-    if (from) query.followUpDate.$gte = new Date(from);
-    if (to) query.followUpDate.$lte = new Date(to);
+    Object.assign(query.followUpDate, parseIstDateRange(from, to));
   }
 
   const skip = (parseInt(page) - 1) * parseInt(limit);

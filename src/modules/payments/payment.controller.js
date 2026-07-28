@@ -10,6 +10,7 @@ import { TreatmentMaster } from "../treatments/treatment.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
 import SystemSettings from "../settings/settings.model.js";
 import mongoose from "mongoose";
+import { parseIstDateRange } from "../../utils/istDateRange.js";
 import crypto from "crypto";
 import PDFDocument from "pdfkit";
 
@@ -74,9 +75,7 @@ const buildPaymentQuery = ({ patient, status, paymentMode, type, clinic, from, t
     query.clinic = clinic;
   }
   if (from || to) {
-    query.createdAt = {};
-    if (from) query.createdAt.$gte = new Date(from);
-    if (to) query.createdAt.$lte = new Date(to);
+    query.createdAt = parseIstDateRange(from, to);
   }
 
   return query;
@@ -1343,9 +1342,7 @@ export const confirmManualRefund = asyncHandler(async (req, res) => {
 export const getPaymentSummaryStats = asyncHandler(async (req, res) => {
   const { from, to } = req.query;
 
-  const createdAtRange = {};
-  if (from) createdAtRange.$gte = new Date(from);
-  if (to) createdAtRange.$lte = new Date(to);
+  const createdAtRange = parseIstDateRange(from, to);
 
   const collectedMatch = { status: { $in: ["paid", "refunded", "refund_pending"] } };
   if (from || to) collectedMatch.createdAt = createdAtRange;
@@ -1395,8 +1392,9 @@ export const getPaymentStats = asyncHandler(async (req, res) => {
   const { clinic, from, to } = req.query;
 
   // Date range (default: current month)
-  const startDate = from ? new Date(from) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-  const endDate = to ? new Date(to) : new Date();
+  const istRange = parseIstDateRange(from, to);
+  const startDate = istRange.$gte || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const endDate = istRange.$lte || new Date();
 
   // Build match query
   const matchQuery = {
