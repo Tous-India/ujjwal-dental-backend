@@ -674,6 +674,48 @@ export const createAppointment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, slotError.message, slotError.status);
   }
 
+  // 4-hour minimum gap between OPD/Appointment-type visits for the SAME
+  // patient -- prevents accidentally double-booking a patient into two
+  // close-together OPD slots. Scoped to visitType "opd" only; treatment and
+  // treatment_session bookings are unaffected (a patient legitimately may
+  // have a treatment session soon after/before an unrelated OPD visit).
+  if ((visitType || "opd") === "opd") {
+    const requestedDateTime = new Date(date);
+    const [reqH, reqM] = String(timeSlot).split(":").map(Number);
+    requestedDateTime.setHours(reqH, reqM, 0, 0);
+    const fourHoursMs = 4 * 60 * 60 * 1000;
+    const windowStart = new Date(requestedDateTime.getTime() - fourHoursMs);
+    const windowEnd = new Date(requestedDateTime.getTime() + fourHoursMs);
+    const dayStart = new Date(requestedDateTime);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(requestedDateTime);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const sameDayOpdAppointments = await Appointment.find({
+      patient: patient._id,
+      visitType: "opd",
+      date: { $gte: dayStart, $lte: dayEnd },
+      status: { $nin: ["cancelled"] },
+    })
+      .select("timeSlot")
+      .lean();
+
+    const hasNearbyOpd = sameDayOpdAppointments.some((a) => {
+      const [h, m] = String(a.timeSlot).split(":").map(Number);
+      const existing = new Date(requestedDateTime);
+      existing.setHours(h, m, 0, 0);
+      return existing >= windowStart && existing <= windowEnd;
+    });
+
+    if (hasNearbyOpd) {
+      return ApiResponse.error(
+        res,
+        "This patient already has an appointment within 4 hours of this time. Please choose a different time.",
+        400
+      );
+    }
+  }
+
   /* =======================
      TREATMENT SESSION BRANCH
      (early return — no fee, no new invoice)
