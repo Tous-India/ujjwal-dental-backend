@@ -383,18 +383,33 @@ export const downloadReport = asyncHandler(async (req, res) => {
     }
   }
 
-  // Generate signed URL for secure access
+  // Files uploaded via the multi-file flow live in `files[]`, never the
+  // legacy singular `file` field -- that field is only set on reports
+  // created before multi-file support existed. Reading `report.file.publicId`
+  // unconditionally threw for every multi-file report (file is undefined),
+  // breaking View/Download entirely for any report created after that
+  // migration. `?fileIndex=` selects which file when a report has several;
+  // defaults to the first.
+  const fileIndex = Number(req.query.fileIndex) || 0;
+  const targetFile =
+    report.files?.length > 0 ? report.files[fileIndex] || report.files[0] : report.file;
+
+  if (!targetFile?.url && !targetFile?.publicId) {
+    return ApiResponse.error(res, "No file found for this report", 404);
+  }
+
   // Files are uploaded as 'image' resource type in Cloudinary (including PDFs)
-  const signedUrl = report.file.publicId
-    ? getSignedUrl(report.file.publicId, false)
-    : report.file.url;
+  const signedUrl = targetFile.publicId
+    ? getSignedUrl(targetFile.publicId, false)
+    : targetFile.url;
 
   ApiResponse.success(
     res,
     {
       downloadUrl: signedUrl,
-      fileName: report.file.fileName,
-      fileType: report.file.fileType,
+      fileName: targetFile.fileName,
+      fileType: targetFile.fileType,
+      totalFiles: report.files?.length || (report.file ? 1 : 0),
     },
     "Download URL generated"
   );
