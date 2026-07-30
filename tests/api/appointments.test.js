@@ -4,6 +4,7 @@ import app from "../../app.js";
 import { getAdminToken, getPatientToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
 import Patient from "../../src/modules/patients/patient.model.js";
+import Appointment from "../../src/modules/appointments/appointment.model.js";
 
 describe("Appointment Lifecycle", () => {
   let token;
@@ -137,8 +138,10 @@ describe("Appointment Lifecycle", () => {
     expect(res.body.success).toBe(false);
   });
 
-  it("POST /api/appointments - rejects a past time slot for today", async () => {
-    // 00:00 today is always at or before the current time → always rejected
+  it("POST /api/appointments - admin CAN book an earlier time today (was: always rejected, now: same allowance as backdating a past date -- logging a missed walk-in)", async () => {
+    // 00:00 today is always at or before the current time -- previously
+    // always rejected outright; now allowed for admin (canBackdate), same
+    // relaxation already applied to past dates.
     const res = await request(app)
       .post("/api/appointments")
       .set(authHeader(token))
@@ -149,11 +152,12 @@ describe("Appointment Lifecycle", () => {
         date: todayStr,
         timeSlot: "00:00",
         type: "regular",
-        reason: "Past time attempt",
+        reason: "Missed walk-in, logged late",
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(201);
+
+    await Appointment.deleteOne({ _id: res.body.data.appointmentId });
   });
 
   it("GET /api/appointments - lists appointments", async () => {

@@ -12,6 +12,8 @@ import Invoice from "../billing/invoice.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 import dispatchBookingNotifications from "../../utils/dispatchBookingNotifications.js";
+import { istDateString, istHourMinute } from "../../utils/istTime.js";
+import { istStartOfDay, istEndOfDay } from "../../utils/istDateRange.js";
 
 /**
  * APPOINTMENT CONTROLLER
@@ -74,12 +76,16 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType, al
     return { status: 400, message: "Invalid date format" };
   }
 
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-
-  const dayStart = new Date(requestedDate);
-  dayStart.setHours(0, 0, 0, 0);
+  // IST-safe day boundaries. `date` arrives as a bare "yyyy-mm-dd" string
+  // (frontend's todayStr()/date-input convention) -- anchoring explicitly to
+  // IST midnight (istStartOfDay/istEndOfDay), not `new Date(date)` +
+  // setHours(0,0,0,0), which is UTC-midnight-anchored on a UTC-default
+  // server (Vercel, confirmed no TZ env var configured) and was silently
+  // off by up to 5.5 hours -- the confirmed root cause of appointment
+  // numbers, "already passed" checks, and backdating boundaries all being
+  // computed against the wrong reference day/time in production.
+  const dayStart = istStartOfDay(date);
+  const todayStart = istStartOfDay(istDateString());
 
   // 1) Past-date boundary: today-forward for everyone by default; staff with
   //    backdating rights may go down to (today - MIN_BACKDATE_DAYS).
@@ -99,11 +105,18 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType, al
   // 2) No past time slots when booking for today. Skipped entirely for any
   //    non-today date -- including backdated ones, whose slots are all
   //    trivially "past" time-wise and shouldn't be rejected on that basis.
+  //    Also skipped for TODAY specifically when the caller has backdating
+  //    rights (admin/clinic_manager) -- logging a missed walk-in entry for
+  //    an earlier time today is the same use case as backdating to a past
+  //    date, just within today. Patients/public booking never get
+  //    allowBackdate, so this exception never reaches them -- they remain
+  //    fully blocked from any past time, today included, with no exception.
   const isToday = dayStart.getTime() === todayStart.getTime();
-  if (isToday && timeSlot) {
+  if (isToday && timeSlot && !allowBackdate) {
     const [h, m] = String(timeSlot).split(":").map(Number);
     const slotMinutes = h * 60 + m;
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const { hour: nowHour, minute: nowMinute } = istHourMinute();
+    const nowMinutes = nowHour * 60 + nowMinute;
     if (slotMinutes <= nowMinutes) {
       return { status: 400, message: "This time slot has already passed" };
     }
@@ -112,8 +125,7 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType, al
   // 3) Slot capacity — at most `capacity` active bookings per slot (2 regular,
   //    3 when this incoming booking is an emergency).
   const capacity = slotCapacityFor(bookingType);
-  const dayEnd = new Date(requestedDate);
-  dayEnd.setHours(23, 59, 59, 999);
+  const dayEnd = istEndOfDay(date);
   const slotCount = await Appointment.countDocuments({
     clinic,
     date: { $gte: dayStart, $lte: dayEnd },
@@ -335,14 +347,11 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 export const getTodayAppointments = asyncHandler(async (req, res) => {
-  // 1️⃣ Get current date
-  const today = new Date();
-
-  const startOfDay = new Date(today);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(today);
-  endOfDay.setHours(23, 59, 59, 999);
+  // IST-anchored "today" -- new Date().setHours(0,0,0,0) is UTC-midnight
+  // on a UTC-default server (Vercel), which can be a whole calendar day off
+  // from the real IST "today" during the 00:00-05:30 IST window.
+  const startOfDay = istStartOfDay(istDateString());
+  const endOfDay = istEndOfDay(istDateString());
 
   // 2️⃣ Query appointments for today (FIXED FIELD)
   const appointments = await Appointment.find({
@@ -429,11 +438,12 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     }
   }
 
-  // Get booked slots for this date
-  const startOfDay = new Date(requestedDate);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(requestedDate);
-  endOfDay.setHours(23, 59, 59, 999);
+  // Get booked slots for this date -- IST-anchored, not UTC-midnight
+  // (`date` is a bare "yyyy-mm-dd" string; see validateAppointmentSlot's
+  // comment for why `new Date(date)` + setHours(0,0,0,0) is wrong on a
+  // UTC-default server).
+  const startOfDay = istStartOfDay(date);
+  const endOfDay = istEndOfDay(date);
 
   const bookedAppointments = await Appointment.find({
     clinic: clinicId,
@@ -461,9 +471,7 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
   // allowance at all, so every slot on ANY non-today date looked "already
   // passed" by simple time-of-day comparison, blocking backdated bookings
   // entirely even after the booking-validation endpoint was fixed to allow them.
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
+  const todayStart = istStartOfDay(istDateString());
   if (startOfDay < todayStart) {
     if (canBackdate(req.user)) {
       const earliestBackdate = new Date(todayStart);
@@ -477,9 +485,12 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
     } else {
       availableSlots = [];
     }
-  } else if (requestedDate.toDateString() === now.toDateString()) {
-    // Today: drop slots that have already passed.
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  } else if (startOfDay.getTime() === todayStart.getTime() && !canBackdate(req.user)) {
+    // Today: drop slots that have already passed. Skipped for staff with
+    // backdating rights -- they may log a missed walk-in for an earlier
+    // time today, same allowance as backdating to a past date.
+    const { hour: nowHour, minute: nowMinute } = istHourMinute();
+    const currentMinutes = nowHour * 60 + nowMinute;
     availableSlots = availableSlots.filter((slot) => {
       const [h, m] = slot.split(":").map(Number);
       return h * 60 + m > currentMinutes;
@@ -686,10 +697,10 @@ export const createAppointment = asyncHandler(async (req, res) => {
     const fourHoursMs = 4 * 60 * 60 * 1000;
     const windowStart = new Date(requestedDateTime.getTime() - fourHoursMs);
     const windowEnd = new Date(requestedDateTime.getTime() + fourHoursMs);
-    const dayStart = new Date(requestedDateTime);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(requestedDateTime);
-    dayEnd.setHours(23, 59, 59, 999);
+    // IST-anchored day window for the DB query (which appointments count as
+    // "same day") -- consistent with the rest of this file's IST-safety fix.
+    const dayStart = istStartOfDay(date);
+    const dayEnd = istEndOfDay(date);
 
     const sameDayOpdAppointments = await Appointment.find({
       patient: patient._id,
@@ -1447,17 +1458,19 @@ export const updateAppointment = asyncHandler(async (req, res) => {
 
     // Same backdating rule as create/reschedule: only when the date is
     // actually being changed, and only admin/clinic_manager may move it
-    // into the past, capped at MIN_BACKDATE_DAYS.
+    // into the past, capped at MIN_BACKDATE_DAYS. IST-anchored (`date` is a
+    // bare "yyyy-mm-dd" string here, guaranteed since this block only runs
+    // `if (date)`), not UTC-midnight-anchored.
     if (date) {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      if (startOfDay < todayStart) {
+      const newDateIstStart = istStartOfDay(date);
+      const todayStart = istStartOfDay(istDateString());
+      if (newDateIstStart < todayStart) {
         if (!canBackdate(req.user)) {
           return ApiResponse.error(res, "Cannot move an appointment to a past date", 400);
         }
         const earliestBackdate = new Date(todayStart);
         earliestBackdate.setDate(earliestBackdate.getDate() - MIN_BACKDATE_DAYS);
-        if (startOfDay < earliestBackdate) {
+        if (newDateIstStart < earliestBackdate) {
           return ApiResponse.error(
             res,
             `Cannot backdate an appointment more than ${MIN_BACKDATE_DAYS} days`,
@@ -1952,11 +1965,8 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid date format", 400);
   }
 
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const dayStart = new Date(requestedDate);
-  dayStart.setHours(0, 0, 0, 0);
+  const todayStart = istStartOfDay(istDateString());
+  const dayStart = istStartOfDay(newDate);
 
   if (canBackdate(req.user)) {
     const earliestBackdate = new Date(todayStart);

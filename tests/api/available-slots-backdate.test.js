@@ -34,10 +34,14 @@ describe("GET /api/appointments/available-slots -- backdated dates now show slot
     expect(res.body.data.availableSlots).toContain("09:00");
   });
 
-  it("T2 (HARD GATE): TODAY still correctly filters out already-passed slots (regression)", async () => {
+  it("T2 (HARD GATE): TODAY still correctly filters out already-passed slots for a caller WITHOUT backdating rights (patient/unauthenticated)", async () => {
+    // Unauthenticated -- canBackdate(undefined) is false, same as any
+    // patient-facing call. Admin is now deliberately EXEMPT from this
+    // filter for today (see the new test below) -- same allowance as
+    // backdating a past date, so this regression check must use a
+    // non-admin caller to still be testing the right thing.
     const res = await request(app)
       .get("/api/appointments/available-slots")
-      .set(authHeader(token))
       .query({ clinic: testData.clinic._id.toString(), date: todayStr() });
     expect(res.status).toBe(200);
     const now = new Date();
@@ -46,6 +50,15 @@ describe("GET /api/appointments/available-slots -- backdated dates now show slot
       const [h, m] = slot.split(":").map(Number);
       expect(h * 60 + m).toBeGreaterThan(currentMinutes);
     }
+  });
+
+  it("Admin (backdating rights) sees ALL of today's slots, including already-passed ones -- same allowance as past dates", async () => {
+    const res = await request(app)
+      .get("/api/appointments/available-slots")
+      .set(authHeader(token))
+      .query({ clinic: testData.clinic._id.toString(), date: todayStr() });
+    expect(res.status).toBe(200);
+    expect(res.body.data.availableSlots).toContain("09:00"); // always in the past by the time tests run
   });
 
   it("T3 (HARD GATE): a FUTURE date still returns the full slot range (regression)", async () => {

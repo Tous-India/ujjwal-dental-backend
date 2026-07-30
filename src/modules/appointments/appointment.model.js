@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { nextDailyToken, istDateKey } from "./appointmentToken.js";
+import { istHourMinute } from "../../utils/istTime.js";
 
 /**
  * APPOINTMENT MODEL
@@ -346,8 +347,14 @@ appointmentSchema.pre("save", async function () {
   // Appointment number — walk-forward verify (safe after cancellations/deletions;
   // matches the same pattern used by invoice number generation)
   const now = new Date();
-  const year = now.getFullYear().toString().slice(-2);
-  const month = String(now.getMonth() + 1).padStart(2, "0");
+  // year/month must reflect the IST calendar date, not the server's local
+  // one -- .getFullYear()/.getMonth() are local-timezone accessors and would
+  // be wrong near the UTC day boundary (00:00-05:30 IST is still "yesterday"
+  // in UTC) on a UTC-default server. istDateKey() already solves this the
+  // same way the daily token counter does.
+  const [istYear, istMonth] = istDateKey(now).split("-");
+  const year = istYear.slice(-2);
+  const month = istMonth;
 
   // Prefer an explicit per-clinic code (set on the Clinic doc to avoid
   // collisions between similarly-named clinics); fall back to computed
@@ -367,8 +374,9 @@ appointmentSchema.pre("save", async function () {
   // still get a number reflecting when they were ENTERED, not the backdated date.
   for (let i = 0; i < 10; i++) {
     const attemptTime = new Date(now.getTime() + i * 60000);
-    const attemptHH = String(attemptTime.getHours()).padStart(2, "0");
-    const attemptMM = String(attemptTime.getMinutes()).padStart(2, "0");
+    const { hour: attemptHourNum, minute: attemptMinuteNum } = istHourMinute(attemptTime);
+    const attemptHH = String(attemptHourNum).padStart(2, "0");
+    const attemptMM = String(attemptMinuteNum).padStart(2, "0");
     const candidate = `${prefix}${attemptHH}${attemptMM}`;
     const exists = await mongoose.model("Appointment")
       .findOne({ appointmentNumber: candidate })
@@ -382,9 +390,10 @@ appointmentSchema.pre("save", async function () {
   if (!this.appointmentNumber) {
     // Extremely unlikely: 10 straight minutes all collided. Append seconds so
     // the number stays unique instead of blocking the booking.
-    const ss = String(now.getSeconds()).padStart(2, "0");
-    const hh = String(now.getHours()).padStart(2, "0");
-    const mm = String(now.getMinutes()).padStart(2, "0");
+    const ss = String(now.getUTCSeconds()).padStart(2, "0");
+    const { hour: fallbackHour, minute: fallbackMinute } = istHourMinute(now);
+    const hh = String(fallbackHour).padStart(2, "0");
+    const mm = String(fallbackMinute).padStart(2, "0");
     this.appointmentNumber = `${prefix}${hh}${mm}${ss}`;
   }
 
