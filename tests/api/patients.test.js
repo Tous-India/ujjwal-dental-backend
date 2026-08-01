@@ -31,6 +31,22 @@ describe("Patients CRUD", () => {
     createdPatientId = patient._id;
   });
 
+  it("POST /api/patients - stores a standalone age with no dateOfBirth ever derived from it", async () => {
+    const res = await request(app)
+      .post("/api/patients")
+      .set(authHeader(token))
+      .send({
+        name: "Age Only Patient",
+        phone: "8888888887",
+        age: 45,
+      });
+
+    expect(res.status).toBe(201);
+    const patient = res.body.data.patient || res.body.data;
+    expect(patient.age).toBe(45);
+    expect(patient.dateOfBirth).toBeFalsy();
+  });
+
   it("POST /api/patients - rejects duplicate phone", async () => {
     const res = await request(app)
       .post("/api/patients")

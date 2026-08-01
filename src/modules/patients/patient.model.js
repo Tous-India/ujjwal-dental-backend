@@ -127,6 +127,15 @@ const patientSchema = new mongoose.Schema(
 
     dateOfBirth: Date,
 
+    // Standalone age (years), collected directly for patients who are
+    // uncomfortable sharing an exact date of birth. Independent of
+    // dateOfBirth/calculatedAge -- never derived from or used to infer one.
+    age: {
+      type: Number,
+      min: 0,
+      max: 130,
+    },
+
     address: addressSchema,
 
     // -------- Medical Info --------
