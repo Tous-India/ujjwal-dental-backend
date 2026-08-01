@@ -1140,7 +1140,7 @@ export const downloadInvoicePdf = asyncHandler(async (req, res) => {
   doc.moveDown(0.4);
   doc.fontSize(9).font("Helvetica-Oblique").fillColor("#555555");
   doc.text(
-    "Ujjwal Dental Clinic — A unit of Healing Fairy Health Care Pvt. Ltd.",
+    "Ujjwal Dental Clinic and Maxillofacial Surgery Center",
     leftMargin,
     doc.y,
     { align: "center", width: pageWidth },
