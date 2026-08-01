@@ -13,6 +13,30 @@ import Blog from "./blog.model.js";
  * lifecycle.
  */
 
+const WORDS_PER_MINUTE = 200;
+
+/**
+ * Compute estimated read time (minutes, rounded up) from HTML content:
+ * strip tags, count words, divide by WORDS_PER_MINUTE. Stored on the doc at
+ * create/update time rather than recomputed on every public read.
+ */
+const computeReadTime = (html = "") => {
+  const text = String(html || "").replace(/<[^>]*>/g, " ");
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return Math.max(1, Math.ceil(words.length / WORDS_PER_MINUTE));
+};
+
+/**
+ * Public-read filter: a post is publicly visible when it's actually
+ * "published", OR when it's "scheduled" and scheduledPublishAt has already
+ * passed. Computed on every read, no cron (Vercel serverless doesn't
+ * reliably run scheduled jobs -- same pattern as getStaleTreatments in
+ * appointment.controller.js).
+ */
+const publicVisibilityQuery = () => ({
+  $or: [{ status: "published" }, { status: "scheduled", scheduledPublishAt: { $lte: new Date() } }],
+});
+
 // ==================== PUBLIC ====================
 
 /**
@@ -24,16 +48,32 @@ export const getPublishedBlogs = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10 } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
-  const query = { status: "published" };
+  const query = publicVisibilityQuery();
 
-  const [blogs, total] = await Promise.all([
-    Blog.find(query)
-      .populate("author", "name")
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit)),
+  const [rawBlogs, total] = await Promise.all([
+    Blog.aggregate([
+      { $match: query },
+      // Sort by the effective publish date: publishedAt for "published"
+      // posts, falling back to scheduledPublishAt for "scheduled" posts
+      // that have just crossed their threshold (publishedAt is left null
+      // until an explicit publish action).
+      { $addFields: { effectivePublishedAt: { $ifNull: ["$publishedAt", "$scheduledPublishAt"] } } },
+      { $sort: { effectivePublishedAt: -1 } },
+      { $skip: skip },
+      { $limit: parseInt(limit) },
+    ]),
     Blog.countDocuments(query),
   ]);
+
+  await Blog.populate(rawBlogs, { path: "author", select: "name" });
+
+  // Display fallback only (not persisted): scheduled posts show their
+  // scheduled date as the publish date until an explicit publish stamps
+  // publishedAt for real.
+  const blogs = rawBlogs.map((b) => ({
+    ...b,
+    publishedAt: b.publishedAt || b.scheduledPublishAt || null,
+  }));
 
   ApiResponse.success(res, { blogs, total, page: parseInt(page), limit: parseInt(limit) }, "Blogs fetched successfully");
 });
@@ -47,7 +87,7 @@ export const getPublishedBlogBySlug = asyncHandler(async (req, res) => {
   const { slug } = req.params;
 
   const blog = await Blog.findOneAndUpdate(
-    { slug, status: "published" },
+    { slug, ...publicVisibilityQuery() },
     { $inc: { views: 1 } },
     { new: true },
   ).populate("author", "name");
@@ -56,7 +96,12 @@ export const getPublishedBlogBySlug = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Blog not found", 404);
   }
 
-  ApiResponse.success(res, { blog }, "Blog fetched successfully");
+  const blogObj = blog.toObject();
+  if (!blogObj.publishedAt && blogObj.scheduledPublishAt) {
+    blogObj.publishedAt = blogObj.scheduledPublishAt;
+  }
+
+  ApiResponse.success(res, { blog: blogObj }, "Blog fetched successfully");
 });
 
 // ==================== ADMIN ====================
@@ -67,11 +112,12 @@ export const getPublishedBlogBySlug = asyncHandler(async (req, res) => {
  * @access  Admin / Blog Editor
  */
 export const getAllBlogs = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, status, search } = req.query;
+  const { page = 1, limit = 10, status, search, category } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   const query = {};
   if (status) query.status = status;
+  if (category) query.category = category;
   if (search) query.title = { $regex: search, $options: "i" };
 
   const [blogs, total] = await Promise.all([
@@ -113,10 +159,28 @@ export const getBlogById = asyncHandler(async (req, res) => {
  * @access  Admin / Blog Editor
  */
 export const createBlog = asyncHandler(async (req, res) => {
-  const { title, slug, excerpt, content, coverImage, tags, seoTitle, seoDescription, status } = req.body;
+  const {
+    title,
+    slug,
+    excerpt,
+    content,
+    coverImage,
+    tags,
+    seoTitle,
+    seoDescription,
+    status,
+    category,
+    scheduledPublishAt,
+  } = req.body;
 
   if (!title || !content) {
     return ApiResponse.error(res, "Title and content are required", 400);
+  }
+
+  const resolvedStatus = ["published", "scheduled"].includes(status) ? status : "draft";
+
+  if (resolvedStatus === "scheduled" && !scheduledPublishAt) {
+    return ApiResponse.error(res, "scheduledPublishAt is required when status is scheduled", 400);
   }
 
   const blog = await Blog.create({
@@ -128,8 +192,11 @@ export const createBlog = asyncHandler(async (req, res) => {
     tags,
     seoTitle,
     seoDescription,
-    status: status === "published" ? "published" : "draft",
-    publishedAt: status === "published" ? new Date() : null,
+    category,
+    status: resolvedStatus,
+    scheduledPublishAt: resolvedStatus === "scheduled" ? new Date(scheduledPublishAt) : null,
+    publishedAt: resolvedStatus === "published" ? new Date() : null,
+    readTimeMinutes: computeReadTime(content),
     author: req.user._id,
   });
 
@@ -166,6 +233,8 @@ export const updateBlog = asyncHandler(async (req, res) => {
     "seoTitle",
     "seoDescription",
     "status",
+    "category",
+    "scheduledPublishAt",
   ];
 
   allowedFields.forEach((field) => {
@@ -174,10 +243,25 @@ export const updateBlog = asyncHandler(async (req, res) => {
     }
   });
 
+  if (blog.status === "scheduled" && !blog.scheduledPublishAt) {
+    return ApiResponse.error(res, "scheduledPublishAt is required when status is scheduled", 400);
+  }
+
+  // Going to any status other than "scheduled" clears a stale scheduled date
+  // so a later re-read doesn't misreport it.
+  if (blog.status !== "scheduled") {
+    blog.scheduledPublishAt = null;
+  }
+
   // Publishing for the first time stamps publishedAt; going back to draft
   // deliberately leaves publishedAt untouched (don't erase publish history).
   if (blog.isModified("status") && blog.status === "published" && !blog.publishedAt) {
     blog.publishedAt = new Date();
+  }
+
+  // Recompute the stored read-time estimate whenever content changes.
+  if (req.body.content !== undefined) {
+    blog.readTimeMinutes = computeReadTime(blog.content);
   }
 
   await blog.save();
