@@ -10,6 +10,7 @@ import Payment from "../payments/payment.model.js";
 import Report from "../reports/report.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Test from "../tests/test.model.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 
 /**
  * PATIENT CONTROLLER
@@ -203,6 +204,10 @@ export const createPatient = asyncHandler(async (req, res) => {
     notes,
     password: "account123",
   });
+
+  // New patient, portal account created just now -- fire-and-forget, never
+  // blocks/fails the response below.
+  fireWhatsApp(patient.phone, "account_created", { password: "account123" });
 
   ApiResponse.created(res, { patient }, "Patient created successfully");
 });
@@ -508,6 +513,7 @@ export const getPatientTreatments = asyncHandler(async (req, res) => {
     .populate("treatmentId", "name category price")
     .populate("clinic", "name code")
     .populate("invoice", "grandTotal amountPaid balanceDue")
+    .populate("originatingOpdAppointment", "appointmentNumber")
     .sort({ createdAt: -1 });
 
   let appointments, total;
@@ -538,6 +544,10 @@ export const getPatientTreatments = asyncHandler(async (req, res) => {
 
   let treatments = appointments.map((a) => ({
     _id: a._id,
+    appointmentNumber: a.appointmentNumber,
+    originatingOpdAppointment: a.originatingOpdAppointment
+      ? { _id: a.originatingOpdAppointment._id, appointmentNumber: a.originatingOpdAppointment.appointmentNumber }
+      : null,
     name: a.treatmentName || a.treatmentId?.name || "Treatment",
     treatmentType: a.treatmentId
       ? { name: a.treatmentId.name, category: a.treatmentId.category, price: a.treatmentId.price }

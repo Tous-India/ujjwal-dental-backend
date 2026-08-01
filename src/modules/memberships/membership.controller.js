@@ -5,6 +5,7 @@ import Patient from "../patients/patient.model.js";
 import Payment from "../payments/payment.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
 import { notify } from "../../utils/notifyHelper.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 
@@ -484,6 +485,13 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
         ],
         recordedBy: req.user?._id,
       });
+
+      // Real money just got recorded against this invoice -- fire-and-forget.
+      fireWhatsApp(patient.phone, "payment_recorded", {
+        amount: membershipPaid,
+        description: resolvedPlanName || "Membership",
+        invoiceNumber: invoice.invoiceNumber,
+      });
     } catch (err) {
       console.error("Auto-invoice for manual membership failed:", err.message);
     }
@@ -511,6 +519,11 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
     title: "Membership Plan Activated",
     message: `Your ${resolvedPlanName} membership has been activated. Valid from ${start.toLocaleDateString("en-IN")} to ${expiry.toLocaleDateString("en-IN")}. Enjoy your benefits!`,
     sendEmail: true,
+  });
+
+  fireWhatsApp(patient.phone, "membership_purchased", {
+    planName: resolvedPlanName,
+    validUntil: expiry.toLocaleDateString("en-IN"),
   });
 });
 
@@ -776,6 +789,9 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
         password: autoPassword,
       });
 
+      // New patient, portal account created just now -- fire-and-forget.
+      fireWhatsApp(patient.phone, "account_created", { password: autoPassword });
+
       // Send welcome email
       if (email) {
         const { sendEmail } = await import("../../utils/email.js");
@@ -885,6 +901,13 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
         },
       ],
     });
+
+    // Real money just got recorded against this invoice -- fire-and-forget.
+    fireWhatsApp(patient.phone, "payment_recorded", {
+      amount: plan.price,
+      description: plan.name,
+      invoiceNumber: invoice.invoiceNumber,
+    });
   } catch (err) {
     console.error("Auto-invoice for membership purchase failed:", err.message);
   }
@@ -909,6 +932,11 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
   );
 
   notify({ recipientId: patient._id, recipientModel: "Patient", type: "membership_renewal", title: "Membership Activated", message: `Your ${plan.name} membership is now active! Valid until ${expiryDate.toLocaleDateString("en-IN")}. Enjoy your benefits.`, sendEmail: true });
+
+  fireWhatsApp(patient.phone, "membership_purchased", {
+    planName: plan.name,
+    validUntil: expiryDate.toLocaleDateString("en-IN"),
+  });
 });
 
 /**

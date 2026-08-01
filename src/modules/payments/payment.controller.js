@@ -1,6 +1,7 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { notify } from "../../utils/notifyHelper.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Appointment from "../appointments/appointment.model.js";
@@ -536,6 +537,12 @@ export const createPayment = asyncHandler(async (req, res) => {
     .populate("invoice", "invoiceNumber grandTotal balanceDue paymentStatus")
     .populate("clinic", "name code");
 
+  fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
+    amount,
+    description: notes || (populatedPayment.invoice ? "Invoice payment" : "Advance payment"),
+    invoiceNumber: populatedPayment.invoice?.invoiceNumber,
+  });
+
   ApiResponse.created(res, { payment: populatedPayment }, "Payment recorded successfully");
 });
 
@@ -572,6 +579,12 @@ export const recordOpdPayment = asyncHandler(async (req, res) => {
     .populate("patient", "name phone")
     .populate("clinic", "name code");
 
+  fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
+    amount,
+    description: notes || "OPD Fee",
+    invoiceNumber: undefined,
+  });
+
   ApiResponse.created(res, { payment: populatedPayment }, "OPD payment recorded successfully");
 });
 
@@ -606,6 +619,12 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
   const populatedPayment = await Payment.findById(payment._id)
     .populate("patient", "name phone")
     .populate("clinic", "name code");
+
+  fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
+    amount,
+    description: notes || `Membership: ${planName || "Plan"}`,
+    invoiceNumber: undefined,
+  });
 
   ApiResponse.created(res, { payment: populatedPayment }, "Membership payment recorded successfully");
 });
@@ -979,6 +998,12 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
 
   if (payment.patient) {
     notify({ recipientId: payment.patient, recipientModel: "Patient", type: "payment_received", title: "Payment Received", message: `Your payment of ₹${payment.amount} has been received successfully.`, sendEmail: true });
+
+    fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
+      amount: payment.amount,
+      description: payment.treatmentName || payment.notes || "Payment",
+      invoiceNumber: populatedPayment.invoice?.invoiceNumber,
+    });
   }
 });
 
@@ -1659,6 +1684,14 @@ export const recordAdminPayment = asyncHandler(async (req, res) => {
   });
   await payment.save();
 
+  fireWhatsApp(patient.phone, "payment_recorded", {
+    amount: numAmount,
+    description: settledInvoices.length === 1
+      ? `Invoice ${settledInvoices[0].invoiceNumber}`
+      : `${settledInvoices.length} invoices`,
+    invoiceNumber: settledInvoices[0]?.invoiceNumber,
+  });
+
   return ApiResponse.success(
     res,
     { payment, settledInvoices },
@@ -1825,6 +1858,21 @@ export const collectPayment = asyncHandler(async (req, res) => {
   });
 
   await payment.save();
+
+  // invoice.patient is only an ObjectId here -- resolve the phone in a
+  // self-contained fire-and-forget lookup, never awaited by the caller.
+  (async () => {
+    try {
+      const payer = await Patient.findById(invoice.patient).select("phone");
+      fireWhatsApp(payer?.phone, "payment_recorded", {
+        amount: numAmount,
+        description: notes || `Invoice ${invoice.invoiceNumber}`,
+        invoiceNumber: invoice.invoiceNumber,
+      });
+    } catch (err) {
+      console.error("[WhatsApp] payment_recorded lookup failed:", err.message);
+    }
+  })();
 
   return ApiResponse.success(
     res,
@@ -2024,6 +2072,12 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       notes: `Invoice payment via Razorpay — ${invoice.invoiceNumber}`,
     });
     await payment.save();
+
+    fireWhatsApp(req.patient?.phone, "payment_recorded", {
+      amount: verifiedAmount,
+      description: `Invoice ${invoice.invoiceNumber}`,
+      invoiceNumber: invoice.invoiceNumber,
+    });
   } else {
     // ── Total-balance FIFO settlement (existing behaviour — unchanged) ───────
     const invoices = await Invoice.find({
@@ -2066,6 +2120,12 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       notes: "Pending amount payment via Razorpay",
     });
     await payment.save();
+
+    fireWhatsApp(req.patient?.phone, "payment_recorded", {
+      amount: verifiedAmount,
+      description: "Pending balance payment",
+      invoiceNumber: undefined,
+    });
   }
 
   return ApiResponse.success(res, { success: true }, "Payment successful");

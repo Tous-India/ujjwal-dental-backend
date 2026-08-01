@@ -12,6 +12,7 @@ import Invoice from "../billing/invoice.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 import dispatchBookingNotifications from "../../utils/dispatchBookingNotifications.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 import { istDateString, istHourMinute } from "../../utils/istTime.js";
 import { istStartOfDay, istEndOfDay } from "../../utils/istDateRange.js";
 
@@ -661,6 +662,12 @@ export const createAppointment = asyncHandler(async (req, res) => {
         phone,
         registeredBy: req.user?._id,
       });
+
+      // New patient created via admin quick-add during booking. No password
+      // is set on this path (admin can set one later via reset-password), so
+      // there's no credential to relay yet -- fire-and-forget regardless,
+      // matching every other new-patient trigger point.
+      fireWhatsApp(patient.phone, "account_created", { password: null });
     }
   }
 
@@ -791,6 +798,8 @@ export const createAppointment = asyncHandler(async (req, res) => {
     });
 
     dispatchBookingNotifications(sessionAppt._id);
+
+    fireWhatsApp(patient.phone, "session_booked", { date, time: timeSlot });
 
     const populated = await Appointment.findById(sessionAppt._id)
       .populate("patient", "name phone email")
@@ -1018,6 +1027,12 @@ export const createAppointment = asyncHandler(async (req, res) => {
               ? `Treatment payment collected at booking — ${lineItemDescription}`
               : "OPD fee collected at admin walk-in booking",
           });
+
+          fireWhatsApp(patient.phone, "payment_recorded", {
+            amount: requestAmountPaid ?? resolvedFee,
+            description: lineItemDescription,
+            invoiceNumber: invoice.invoiceNumber,
+          });
         } catch (payErr) {
           // Log but do NOT fail the booking — the invoice already reflects the collection
           console.error("[createAppointment] Failed to create Payment doc for OPD fee:", payErr?.message);
@@ -1176,6 +1191,10 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     });
     isNewPatient = true;
 
+    // New patient, portal account created just now. No password (passwordless
+    // OTP login here, same as the welcome email below) -- fire-and-forget.
+    fireWhatsApp(patient.phone, "account_created", { password: null });
+
     // Send a welcome email that directs the patient to passwordless OTP login.
     if (email) {
       const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/login`;
@@ -1237,6 +1256,14 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
      LINK PAYMENT TO APPOINTMENT
   ======================== */
 
+  // Payment may already have been attributed to this patient earlier (e.g. a
+  // logged-in patient's treatment payment) -- in that case verifyRazorpayPayment
+  // already fired the payment_recorded WhatsApp notification and this must not
+  // fire it again. For the common anonymous-booking case, though, the payment
+  // was created/verified with no patient attached yet, so THIS is the first
+  // point the patient (and their phone number) is actually known.
+  const paymentAlreadyHadPatient = !!payment.patient;
+
   payment.appointment = appointment._id;
   payment.patient = patient._id;
   await payment.save();
@@ -1249,6 +1276,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
   ======================== */
 
   let invoiceId = null;
+  let invoiceNumber;
   try {
     const invoice = await generateInvoice({
       patient,
@@ -1265,6 +1293,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
       paymentMethod: "online",
     });
     invoiceId = invoice._id;
+    invoiceNumber = invoice.invoiceNumber;
     appointment.invoice = invoice._id;
     await appointment.save();
 
@@ -1289,6 +1318,17 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
   }
 
   dispatchBookingNotifications(appointment._id);
+
+  // Only fire here if the payment wasn't already attributed to a patient at
+  // verify time (see paymentAlreadyHadPatient above) -- otherwise
+  // verifyRazorpayPayment already sent the payment_recorded notification.
+  if (!paymentAlreadyHadPatient) {
+    fireWhatsApp(patient.phone, "payment_recorded", {
+      amount: payment.amount,
+      description: "OPD Consultation",
+      invoiceNumber,
+    });
+  }
 
   /* =======================
      RESPONSE
@@ -1648,6 +1688,21 @@ export const updateAppointment = asyncHandler(async (req, res) => {
             ],
             recordedBy: req.user?._id,
           });
+
+          // invoice.patient is only an ObjectId here -- resolve the phone in a
+          // self-contained fire-and-forget lookup, never awaited by the caller.
+          (async () => {
+            try {
+              const payer = await Patient.findById(invoice.patient).select("phone");
+              fireWhatsApp(payer?.phone, "payment_recorded", {
+                amount: paymentDelta,
+                description: appointment.visitType === "treatment" ? "Treatment" : "OPD Fee",
+                invoiceNumber: invoice.invoiceNumber,
+              });
+            } catch (err) {
+              console.error("[WhatsApp] payment_recorded lookup failed:", err.message);
+            }
+          })();
         }
       }
     }

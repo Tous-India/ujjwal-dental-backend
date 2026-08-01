@@ -6,6 +6,7 @@ import Payment from "../payments/payment.model.js";
 import mongoose from "mongoose";
 import PDFDocument from "pdfkit";
 import { parseIstDateRange } from "../../utils/istDateRange.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 
 /**
  * BILLING CONTROLLER
@@ -735,6 +736,12 @@ export const recordPayment = asyncHandler(async (req, res) => {
 
   const updatedInvoice = await Invoice.findById(id)
     .populate("patient", "name phone");
+
+  fireWhatsApp(updatedInvoice?.patient?.phone, "payment_recorded", {
+    amount,
+    description: `Invoice ${updatedInvoice?.invoiceNumber || ""}`.trim(),
+    invoiceNumber: updatedInvoice?.invoiceNumber,
+  });
 
   ApiResponse.success(res, { invoice: updatedInvoice }, "Payment recorded successfully");
 });
