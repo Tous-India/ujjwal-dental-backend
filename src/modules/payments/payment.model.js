@@ -296,15 +296,28 @@ paymentSchema.statics.findByRazorpayOrderId = function (orderId) {
 };
 
 /**
- * Get payment summary for a patient
+ * Get payment summary for a patient.
+ *
+ * @param {string|ObjectId} patientId
+ * @param {Array<ObjectId>} [voidedInvoiceIds] - ids of currently-voided
+ *   invoices (caller-supplied, since Invoice isn't imported here to avoid a
+ *   circular model dependency). Payments tied to one of these are excluded
+ *   from totalPaid -- voiding is a pure data-entry correction (no real money
+ *   involved), never a refund, and never touches the linked Payment document.
  */
-paymentSchema.statics.getPatientPaymentSummary = async function (patientId) {
+paymentSchema.statics.getPatientPaymentSummary = async function (patientId, voidedInvoiceIds = []) {
+  const match = {
+    patient: new mongoose.Types.ObjectId(patientId),
+    status: "paid",
+  };
+  if (voidedInvoiceIds.length > 0) {
+    match.invoice = { $nin: voidedInvoiceIds };
+    match["settledInvoices.invoiceId"] = { $nin: voidedInvoiceIds };
+  }
+
   const result = await this.aggregate([
     {
-      $match: {
-        patient: new mongoose.Types.ObjectId(patientId),
-        status: "paid",
-      },
+      $match: match,
     },
     {
       $group: {

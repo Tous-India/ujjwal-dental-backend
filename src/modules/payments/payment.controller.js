@@ -1347,6 +1347,20 @@ export const getPaymentSummaryStats = asyncHandler(async (req, res) => {
   const collectedMatch = { status: { $in: ["paid", "refunded", "refund_pending"] } };
   if (from || to) collectedMatch.createdAt = createdAtRange;
 
+  // Exclude payments tied to a voided invoice -- voiding is a pure
+  // data-entry correction (no real money involved), never a refund, and
+  // void never touches the linked Payment document itself (see
+  // voidInvoice in billing.controller.js). $nin on an array field
+  // (settledInvoices.invoiceId) excludes the doc if ANY element matches;
+  // payments with no invoice link at all are unaffected. Deliberately NOT
+  // applied to refundedMatch below -- refunded money is a separate,
+  // already-correct concept that must not be conflated with void.
+  const voidedInvoiceIds = await Invoice.find({ isVoided: true }).distinct("_id");
+  if (voidedInvoiceIds.length > 0) {
+    collectedMatch.invoice = { $nin: voidedInvoiceIds };
+    collectedMatch["settledInvoices.invoiceId"] = { $nin: voidedInvoiceIds };
+  }
+
   const refundedMatch = {
     status: { $in: ["refunded", "refund_pending"] },
     "refund.amount": { $exists: true, $ne: null },
@@ -1404,6 +1418,15 @@ export const getPaymentStats = asyncHandler(async (req, res) => {
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     matchQuery.clinic = new mongoose.Types.ObjectId(clinic);
+  }
+
+  // Exclude payments tied to a voided invoice -- same reasoning as
+  // getPaymentSummaryStats above (voiding is a pure correction, never a
+  // refund, and never touches the linked Payment document).
+  const voidedInvoiceIds = await Invoice.find({ isVoided: true }).distinct("_id");
+  if (voidedInvoiceIds.length > 0) {
+    matchQuery.invoice = { $nin: voidedInvoiceIds };
+    matchQuery["settledInvoices.invoiceId"] = { $nin: voidedInvoiceIds };
   }
 
   // Get stats by payment mode
@@ -1502,7 +1525,8 @@ export const getPatientPaymentSummary = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid patient ID", 400);
   }
 
-  const summary = await Payment.getPatientPaymentSummary(patientId);
+  const voidedInvoiceIds = await Invoice.find({ isVoided: true }).distinct("_id");
+  const summary = await Payment.getPatientPaymentSummary(patientId, voidedInvoiceIds);
 
   ApiResponse.success(res, { summary }, "Patient payment summary fetched successfully");
 });

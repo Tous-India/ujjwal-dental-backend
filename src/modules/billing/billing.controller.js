@@ -752,17 +752,50 @@ const PAYMENT_TYPE_LABELS = {
 };
 
 /**
+ * Ids of every currently-voided invoice. A voided invoice is a pure
+ * data-entry correction (e.g. a phantom double-submit) — no real money was
+ * ever involved, so any Payment document tied to one must be excluded from
+ * every "collected"/"paid" total. Void never deletes or touches the linked
+ * Payment document itself (see voidInvoice), so this exclusion has to be
+ * applied explicitly everywhere a Payment sum feeds a collected/paid figure.
+ * This is a DIFFERENT concept from a refund (real money collected, then
+ * genuinely returned) — refund totals are never filtered by this.
+ */
+const getVoidedInvoiceIds = () => Invoice.find({ isVoided: true }).distinct("_id");
+
+/**
+ * True if a lean Payment doc references (via the legacy singular `invoice`
+ * field or any settledInvoices[].invoiceId entry) at least one voided
+ * invoice. Payments with no invoice link at all are never excluded.
+ */
+const isPaymentLinkedToVoidedInvoice = (payment, voidedIdSet) => {
+  if (payment.invoice && voidedIdSet.has(String(payment.invoice))) return true;
+  if (Array.isArray(payment.settledInvoices)) {
+    return payment.settledInvoices.some((s) => voidedIdSet.has(String(s.invoiceId)));
+  }
+  return false;
+};
+
+/**
  * The real amount a patient has paid, merging the same two sources
  * getMyPaymentHistory uses (Payment collection + unlinked-invoice
  * amountPaid) so the summary cards always agree with the payment list.
  * Read-only — no writes.
  */
 const getPatientTotalPaid = async (patientId) => {
-  const rawPayments = await Payment.find({ patient: patientId, status: "paid" })
-    .select("amount invoice settledInvoices")
-    .lean();
+  const [rawPayments, voidedInvoiceIds] = await Promise.all([
+    Payment.find({ patient: patientId, status: "paid" })
+      .select("amount invoice settledInvoices")
+      .lean(),
+    getVoidedInvoiceIds(),
+  ]);
+  const voidedIdSet = new Set(voidedInvoiceIds.map(String));
 
-  const paymentsSum = rawPayments.reduce((s, p) => s + (p.amount || 0), 0);
+  // Payments tied to a voided invoice never counted as real "paid" money —
+  // voiding is a pure correction, not a refund. See getVoidedInvoiceIds.
+  const realPayments = rawPayments.filter((p) => !isPaymentLinkedToVoidedInvoice(p, voidedIdSet));
+
+  const paymentsSum = realPayments.reduce((s, p) => s + (p.amount || 0), 0);
   // Invoices already represented by a Payment doc must be excluded from the
   // "unlinked invoice" sum below, or the same money gets counted twice. The
   // actual write path (verifyPendingPayment) links a payment to the
@@ -770,7 +803,7 @@ const getPatientTotalPaid = async (patientId) => {
   // singular `invoice` field — checking `invoice` alone missed virtually
   // every real payment, since settledInvoices is what write paths populate.
   const linkedInvoiceIds = new Set(
-    rawPayments.flatMap((p) => {
+    realPayments.flatMap((p) => {
       const ids = p.invoice ? [String(p.invoice)] : [];
       if (Array.isArray(p.settledInvoices)) {
         ids.push(...p.settledInvoices.map((s) => String(s.invoiceId)));
@@ -998,6 +1031,15 @@ export const getBillingStats = asyncHandler(async (req, res) => {
   }
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     paymentMatch.clinic = new mongoose.Types.ObjectId(clinic);
+  }
+  // Exclude payments tied to a voided invoice -- see getVoidedInvoiceIds.
+  // $nin on an array field (settledInvoices.invoiceId) excludes the document
+  // if ANY element matches, which is exactly what's needed here; payments
+  // with no invoice link at all are unaffected since [] never matches $nin.
+  const voidedInvoiceIds = await getVoidedInvoiceIds();
+  if (voidedInvoiceIds.length > 0) {
+    paymentMatch.invoice = { $nin: voidedInvoiceIds };
+    paymentMatch["settledInvoices.invoiceId"] = { $nin: voidedInvoiceIds };
   }
   const [paidAgg] = await Payment.aggregate([
     { $match: paymentMatch },
