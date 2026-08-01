@@ -188,8 +188,9 @@ export const uploadReport = asyncHandler(async (req, res) => {
     description: descriptionsArr[index] || "",
   }));
 
-  // Create report
-  const report = await Report.create({
+  // Create report -- createSafe retries on a duplicate reportNumber
+  // (E11000), which a plain create() can hit under concurrent uploads.
+  const report = await Report.createSafe({
     patient,
     clinic,
     appointment,

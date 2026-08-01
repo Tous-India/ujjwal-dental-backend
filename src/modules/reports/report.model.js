@@ -169,6 +169,40 @@ reportSchema.index({ tags: 1 });
 // ============ PRE-SAVE MIDDLEWARE ============
 
 /**
+ * Find an available report number for the given category prefix + year/month.
+ *
+ * Uses the count of existing reports with the same prefix as the starting
+ * serial, then walks forward until an unused slot is found. This is
+ * collision-safe under concurrent creates: we verify existence before
+ * returning the number instead of blindly assigning count+1 -- the same
+ * proven pattern used for appointmentNumber/invoiceNumber.
+ *
+ * @param {string} prefix - category prefix, e.g. "XRY"
+ * @param {string} year   - 2-digit year, e.g. "26"
+ * @param {string} month  - 2-digit month, e.g. "06"
+ * @returns {Promise<string>} Available report number, e.g. "XRY-2606-0009"
+ */
+reportSchema.statics.findAvailableReportNumber = async function (prefix, year, month) {
+  const fullPrefix = `${prefix}-${year}${month}-`;
+
+  const count = await this.countDocuments({
+    reportNumber: { $regex: `^${fullPrefix}` },
+  });
+
+  const MAX_ATTEMPTS = 10;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const candidate = `${fullPrefix}${(count + 1 + i).toString().padStart(4, "0")}`;
+    const exists = await this.findOne({ reportNumber: candidate }).lean();
+    if (!exists) return candidate;
+    console.warn(`[Report] reportNumber ${candidate} already taken, trying next...`);
+  }
+
+  throw new Error(
+    `[Report] Could not find a free report number after ${MAX_ATTEMPTS} attempts (prefix: ${fullPrefix})`
+  );
+};
+
+/**
  * Generate report number before saving
  * Note: In Mongoose 5+, async middleware should not use next()
  */
@@ -193,18 +227,39 @@ reportSchema.pre("save", async function () {
 
     const prefix = prefixes[this.category] || "RPT";
 
-    // Count reports this month
-    const count = await mongoose.model("Report").countDocuments({
-      createdAt: {
-        $gte: new Date(date.getFullYear(), date.getMonth(), 1),
-        $lte: new Date(date.getFullYear(), date.getMonth() + 1, 0),
-      },
-    });
-
-    const serial = (count + 1).toString().padStart(4, "0");
-    this.reportNumber = `${prefix}-${year}${month}-${serial}`;
+    this.reportNumber = await mongoose
+      .model("Report")
+      .findAvailableReportNumber(prefix, year, month);
   }
 });
+
+/**
+ * Create a report with retry on duplicate reportNumber (E11000).
+ *
+ * The walk-forward generator above closes most of the collision window, but
+ * two truly simultaneous saves can still both pass their "does this number
+ * exist" check before either has inserted (classic check-then-act race) --
+ * confirmed by a real concurrent-create test. Retrying re-runs the pre-save
+ * hook, which regenerates against the now-updated count. Same belt-and-
+ * suspenders pattern already proven for Payment.createSafe (paymentNumber).
+ * Use this instead of Report.create() at upload call sites.
+ */
+reportSchema.statics.createSafe = async function (data, maxAttempts = 5) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await this.create(data);
+    } catch (err) {
+      if (err.code === 11000 && err.keyPattern?.reportNumber) {
+        console.warn(`[Report] Duplicate reportNumber, retrying... (attempt ${attempt}/${maxAttempts})`);
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+};
 
 // ============ METHODS ============
 
