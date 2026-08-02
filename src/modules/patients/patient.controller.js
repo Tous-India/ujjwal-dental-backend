@@ -442,8 +442,11 @@ export const getPatientAppointments = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Patient not found", 404);
   }
 
-  // Build query
-  const query = { patient: id };
+  // Build query -- scoped to OPD visits only. Treatment-type appointments
+  // (visitType "treatment"/"treatment_session") have their own dedicated
+  // Treatments tab (getPatientTreatments); without this filter they showed
+  // up in BOTH tabs simultaneously, since this endpoint never excluded them.
+  const query = { patient: id, visitType: "opd" };
   if (status) {
     query.status = status;
   }
