@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
+import PDFDocument from "pdfkit";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Patient from "./patient.model.js";
@@ -27,11 +28,21 @@ import { fireWhatsApp } from "../../utils/whatsapp.js";
  * @route   GET /api/patients
  * @access  Admin
  */
-export const getAllPatients = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, search, isActive, hasMembership } = req.query;
-
-  // Build query
+/**
+ * Build the Mongo filter used by both the paginated patient list and the
+ * CSV/PDF export, so the two never drift out of sync.
+ *
+ * `hasMembership` (true/false) is the original list-query param.
+ * `membership` (active/expired/none) is what the Patients page's "Membership"
+ * filter dropdown actually sends (its key is `membership`, not
+ * `hasMembership`) -- handled here too so export genuinely respects that
+ * filter. Each condition is pushed into `$and` (rather than assigning `$or`
+ * directly) so search + membership + hasMembership can combine safely
+ * without one `$or` clobbering another.
+ */
+function buildPatientQuery({ search, isActive, hasMembership, membership }) {
   const query = {};
+  const conditions = [];
 
   // Filter by active status.
   // Default to active-only so soft-deleted (deactivated) patients drop out of
@@ -44,22 +55,52 @@ export const getAllPatients = asyncHandler(async (req, res) => {
 
   // Search by name, phone, or email
   if (search) {
-    query.$or = [
-      { name: { $regex: search, $options: "i" } },
-      { phone: { $regex: search, $options: "i" } },
-      { email: { $regex: search, $options: "i" } },
-    ];
+    conditions.push({
+      $or: [
+        { name: { $regex: search, $options: "i" } },
+        { phone: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ],
+    });
   }
 
-  // Filter by membership status
+  // Filter by membership status (legacy boolean param)
   if (hasMembership === "true") {
-    query["membership.status"] = "active";
+    conditions.push({ "membership.status": "active" });
   } else if (hasMembership === "false") {
-    query.$or = [
-      { "membership.status": { $ne: "active" } },
-      { membership: { $exists: false } },
-    ];
+    conditions.push({
+      $or: [
+        { "membership.status": { $ne: "active" } },
+        { membership: { $exists: false } },
+      ],
+    });
   }
+
+  // Filter by membership status (Patients page "Membership" dropdown: active/expired/none)
+  if (membership === "active") {
+    conditions.push({ "membership.status": "active" });
+  } else if (membership === "expired") {
+    conditions.push({ "membership.status": "expired" });
+  } else if (membership === "none") {
+    conditions.push({
+      $or: [
+        { membership: { $exists: false } },
+        { "membership.status": { $exists: false } },
+      ],
+    });
+  }
+
+  if (conditions.length) {
+    query.$and = conditions;
+  }
+
+  return query;
+}
+
+export const getAllPatients = asyncHandler(async (req, res) => {
+  const { page = 1, limit = 10, search, isActive, hasMembership, membership } = req.query;
+
+  const query = buildPatientQuery({ search, isActive, hasMembership, membership });
 
   // Calculate pagination
   const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -82,6 +123,154 @@ export const getAllPatients = asyncHandler(async (req, res) => {
     totalPages: Math.ceil(total / parseInt(limit)),
   });
 });
+
+/**
+ * Escape a single CSV field per RFC 4180: wrap in quotes if it contains a
+ * comma, quote, or newline, doubling any internal quotes.
+ */
+function csvEscape(value) {
+  const str = value === null || value === undefined ? "" : String(value);
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function formatPatientAddress(address) {
+  if (!address) return "";
+  return [address.street, address.city, address.state, address.pincode]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function membershipLabel(membership) {
+  if (!membership?.status) return "None";
+  return membership.planName || membership.status;
+}
+
+/**
+ * @desc    Export patients as CSV or PDF, respecting the same filters
+ *          (search, isActive/Status, membership) as the main patient list.
+ * @route   GET /api/patients/export?format=csv|pdf
+ * @access  Admin
+ */
+export const exportPatients = asyncHandler(async (req, res) => {
+  const { format = "csv", search, isActive, hasMembership, membership } = req.query;
+
+  const query = buildPatientQuery({ search, isActive, hasMembership, membership });
+
+  const patients = await Patient.find(query)
+    .select("name phone email address gender createdAt isActive membership")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (format === "pdf") {
+    return sendPatientsPdf(res, patients);
+  }
+  return sendPatientsCsv(res, patients);
+});
+
+function sendPatientsCsv(res, patients) {
+  const header = ["Name", "Phone", "Email", "Address", "Registered Date", "Status", "Membership"];
+
+  const rows = patients.map((p) =>
+    [
+      p.name || "",
+      p.phone || "",
+      p.email || "",
+      formatPatientAddress(p.address),
+      p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN") : "",
+      p.isActive ? "Active" : "Inactive",
+      membershipLabel(p.membership),
+    ]
+      .map(csvEscape)
+      .join(","),
+  );
+
+  // Leading UTF-8 BOM so Excel renders non-ASCII characters (e.g. ₹, names) correctly.
+  const csv = "﻿" + [header.join(","), ...rows].join("\r\n");
+
+  const filename = `patients-export-${Date.now()}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(csv);
+}
+
+function sendPatientsPdf(res, patients) {
+  const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+  const filename = `patients-export-${Date.now()}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  doc.pipe(res);
+
+  const leftMargin = 50;
+  const pageWidth = doc.page.width - 100;
+  const bottomLimit = doc.page.height - 50;
+
+  doc.fontSize(16).font("Helvetica-Bold").text("Patients Export", leftMargin, 50, { align: "center" });
+  doc.fontSize(9).font("Helvetica").fillColor("#555555");
+  doc.text(`Generated: ${new Date().toLocaleString("en-IN")}  |  Total: ${patients.length}`, {
+    align: "center",
+  });
+  doc.fillColor("black");
+  doc.moveDown(1);
+
+  const colWidths = { name: 130, phone: 80, gender: 55, membership: 100, registered: 70, status: 60 };
+
+  const drawHeaderRow = () => {
+    const y = doc.y;
+    let x = leftMargin;
+    doc.font("Helvetica-Bold").fontSize(9);
+    doc.text("Name", x, y, { width: colWidths.name });
+    x += colWidths.name;
+    doc.text("Phone", x, y, { width: colWidths.phone });
+    x += colWidths.phone;
+    doc.text("Gender", x, y, { width: colWidths.gender });
+    x += colWidths.gender;
+    doc.text("Membership", x, y, { width: colWidths.membership });
+    x += colWidths.membership;
+    doc.text("Registered", x, y, { width: colWidths.registered });
+    x += colWidths.registered;
+    doc.text("Status", x, y, { width: colWidths.status });
+    doc.moveDown(0.4);
+    doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+    doc.moveDown(0.3);
+  };
+
+  drawHeaderRow();
+  doc.font("Helvetica").fontSize(8.5);
+
+  for (const p of patients) {
+    if (doc.y > bottomLimit) {
+      doc.addPage();
+      doc.y = 50;
+      drawHeaderRow();
+      doc.font("Helvetica").fontSize(8.5);
+    }
+
+    const rowY = doc.y;
+    let x = leftMargin;
+    doc.text(p.name || "-", x, rowY, { width: colWidths.name });
+    x += colWidths.name;
+    doc.text(p.phone || "-", x, rowY, { width: colWidths.phone });
+    x += colWidths.phone;
+    doc.text(p.gender || "-", x, rowY, { width: colWidths.gender });
+    x += colWidths.gender;
+    doc.text(membershipLabel(p.membership), x, rowY, { width: colWidths.membership });
+    x += colWidths.membership;
+    doc.text(p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN") : "-", x, rowY, {
+      width: colWidths.registered,
+    });
+    x += colWidths.registered;
+    doc.text(p.isActive ? "Active" : "Inactive", x, rowY, { width: colWidths.status });
+
+    doc.moveDown(0.6);
+  }
+
+  doc.end();
+}
 
 /**
  * @desc    Search patients by name or phone

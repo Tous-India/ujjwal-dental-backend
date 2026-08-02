@@ -21,6 +21,11 @@ router.get('/', authProtect, patientController.getAllPatients);
 // Search patients by name or phone — admin/staff
 router.get('/search', authProtect, patientController.searchPatients);
 
+// Export patients as CSV/PDF (?format=csv|pdf), respecting the same search/
+// isActive/membership filters as the list — admin/staff. Must stay above
+// '/:id' or Express would treat 'export' as a patient ID.
+router.get('/export', authProtect, patientController.exportPatients);
+
 // Get single patient by ID — admin/staff OR the patient themselves
 router.get('/:id', anyAuth, patientSelfOrAdmin, patientController.getPatientById);
 
