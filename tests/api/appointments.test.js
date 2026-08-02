@@ -100,6 +100,61 @@ describe("Appointment Lifecycle", () => {
     await Patient.deleteMany({ _id: { $in: capacityPatients.map((p) => p._id) } });
   });
 
+  it("POST /api/appointments - Emergency (consolidated Type dropdown payload) gets the emergency capacity (3), not the regular one (2)", async () => {
+    // Mirrors the exact payload AddAppointmentModal's consolidated Type
+    // dropdown now sends -- both `type` and `appointmentType` set to
+    // "emergency" together (previously a separate Urgency radio group set
+    // appointmentType alone). This slot is filled to the REGULAR capacity
+    // (2) with regular bookings first, then a 3rd, distinct-patient
+    // Emergency booking must still succeed -- proving appointmentType, not
+    // type or a stale/absent urgency field, is what the capacity check
+    // actually reads for this payload shape.
+    const emergencyPatients = await Patient.create([
+      { name: "Emergency Capacity A", phone: "9000000004" },
+      { name: "Emergency Capacity B", phone: "9000000005" },
+      { name: "Emergency Capacity C", phone: "9000000006" },
+      { name: "Emergency Capacity D", phone: "9000000007" },
+    ]);
+    const book = (patient, urgency) =>
+      request(app)
+        .post("/api/appointments")
+        .set(authHeader(token))
+        .send({
+          patientId: patient._id.toString(),
+          phone: patient.phone,
+          clinic: testData.clinic._id.toString(),
+          date: tomorrowStr,
+          timeSlot: "17:00",
+          type: urgency,
+          appointmentType: urgency,
+          reason: "Emergency capacity test",
+        });
+
+    // Fill regular capacity (2) with two regular bookings.
+    expect((await book(emergencyPatients[0], "regular")).status).toBe(201);
+    expect((await book(emergencyPatients[1], "regular")).status).toBe(201);
+
+    // A 3rd REGULAR booking must now be rejected -- regular capacity is full.
+    const thirdRegular = await book(emergencyPatients[2], "regular");
+    expect(thirdRegular.status).toBe(409);
+
+    // But an EMERGENCY booking in the same slot succeeds -- emergency has
+    // its own higher capacity (3), unaffected by the regular slots filled.
+    const emergencyBooking = await book(emergencyPatients[2], "emergency");
+    expect(emergencyBooking.status).toBe(201);
+    expect(emergencyBooking.body.data.appointmentType).toBe("emergency");
+
+    // Capacity is a shared per-slot total (2 normally, 3 when the requester
+    // is emergency) -- not 2 regular + 3 additional emergency slots. The
+    // slot is now at 3 total (2 regular + 1 emergency), so a 4th booking of
+    // ANY urgency must be rejected -- even another emergency request, since
+    // 3 is the max even under the emergency allowance.
+    const fourthBooking = await book(emergencyPatients[3], "emergency");
+    expect(fourthBooking.status).toBe(409);
+
+    await Patient.deleteMany({ _id: { $in: emergencyPatients.map((p) => p._id) } });
+  });
+
   it("POST /api/appointments - admin can book yesterday (within the 10-day backdate window)", async () => {
     // Admin/clinic_manager may backdate up to 10 days (see MIN_BACKDATE_DAYS
     // in appointment.controller.js) -- yesterday is well within that window.
