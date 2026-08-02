@@ -622,10 +622,14 @@ export const renewMembership = asyncHandler(async (req, res) => {
   });
 });
 
+// Reason threshold for Pause/Cancel, matching tonight's established Void
+// Invoice / Reopen Treatment minimum (10 characters, audit-trail quality).
+const MIN_REASON_LENGTH = 10;
+
 /**
- * @desc    Cancel patient's membership
+ * @desc    Cancel patient's membership (terminal -- no Resume, distinct from Pause)
  * @route   POST /api/memberships/cancel/:patientId
- * @access  Admin
+ * @access  Admin, Clinic Manager
  */
 export const cancelMembership = asyncHandler(async (req, res) => {
   const { patientId } = req.params;
@@ -635,13 +639,19 @@ export const cancelMembership = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid patient ID", 400);
   }
 
-  // Get patient
+  if (!reason || reason.trim().length < MIN_REASON_LENGTH) {
+    return ApiResponse.error(
+      res,
+      `A reason of at least ${MIN_REASON_LENGTH} characters is required to cancel a membership`,
+      400
+    );
+  }
+
   const patient = await Patient.findById(patientId);
   if (!patient) {
     return ApiResponse.error(res, "Patient not found", 404);
   }
 
-  // Check if patient has active membership
   if (!patient.membership || !patient.membership.plan) {
     return ApiResponse.error(res, "Patient does not have an active membership", 400);
   }
@@ -650,16 +660,21 @@ export const cancelMembership = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Membership is already cancelled", 400);
   }
 
-  // Move current membership to history with cancelled status
-  patient.membershipHistory.push({
-    ...patient.membership.toObject(),
-    status: "cancelled",
+  // Unlike the previous implementation, the cancelled membership stays on
+  // patient.membership (not wiped/archived) so its status, reason, and full
+  // statusHistory remain visible to admin for transparency. It's still
+  // archived into membershipHistory the next time a new membership is
+  // assigned/renewed (existing archive-on-reassign behavior, unchanged).
+  patient.membership.status = "cancelled";
+  patient.membership.statusHistory.push({
+    action: "cancelled",
+    reason: reason.trim(),
+    performedBy: req.user._id,
+    performedAt: new Date(),
   });
 
-  // Clear current membership
-  patient.membership = undefined;
-
   await patient.save();
+  await patient.populate("membership.statusHistory.performedBy", "name");
 
   ApiResponse.success(
     res,
@@ -670,10 +685,133 @@ export const cancelMembership = asyncHandler(async (req, res) => {
         phone: patient.phone,
         hasMembership: false,
         currentDiscount: 0,
+        membership: patient.membership,
       },
-      reason,
     },
     "Membership cancelled successfully"
+  );
+});
+
+/**
+ * @desc    Pause patient's membership (temporary -- benefits suspended, resumable)
+ * @route   POST /api/memberships/pause/:patientId
+ * @access  Admin, Clinic Manager
+ */
+export const pauseMembership = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+  const { reason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
+  if (!reason || reason.trim().length < MIN_REASON_LENGTH) {
+    return ApiResponse.error(
+      res,
+      `A reason of at least ${MIN_REASON_LENGTH} characters is required to pause a membership`,
+      400
+    );
+  }
+
+  const patient = await Patient.findById(patientId);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  if (!patient.membership || !patient.membership.plan) {
+    return ApiResponse.error(res, "Patient does not have an active membership", 400);
+  }
+
+  if (patient.membership.status !== "active") {
+    return ApiResponse.error(
+      res,
+      `Cannot pause a membership with status "${patient.membership.status}" -- only an active membership can be paused`,
+      400
+    );
+  }
+
+  patient.membership.status = "paused";
+  patient.membership.pausedAt = new Date();
+  patient.membership.statusHistory.push({
+    action: "paused",
+    reason: reason.trim(),
+    performedBy: req.user._id,
+    performedAt: new Date(),
+  });
+
+  await patient.save();
+  await patient.populate("membership.statusHistory.performedBy", "name");
+
+  ApiResponse.success(
+    res,
+    {
+      patient: {
+        _id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+        hasMembership: false,
+        currentDiscount: 0,
+        membership: patient.membership,
+      },
+    },
+    "Membership paused successfully"
+  );
+});
+
+/**
+ * @desc    Resume a paused membership
+ * @route   POST /api/memberships/resume/:patientId
+ * @access  Admin, Clinic Manager
+ *
+ * Deliberate simplicity call: does NOT auto-extend expiryDate by the paused
+ * duration. Reason is optional here (resuming isn't a corrective action the
+ * way pause/cancel are) but is still logged, along with performedBy/At, for
+ * a complete audit trail. If a patient needs validity extended to make up
+ * for paused time, admin can adjust it manually via the existing renew /
+ * assign-manual flows.
+ */
+export const resumeMembership = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+  const { reason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(patientId)) {
+    return ApiResponse.error(res, "Invalid patient ID", 400);
+  }
+
+  const patient = await Patient.findById(patientId);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 404);
+  }
+
+  if (!patient.membership || patient.membership.status !== "paused") {
+    return ApiResponse.error(res, "Patient does not have a paused membership to resume", 400);
+  }
+
+  patient.membership.status = "active";
+  patient.membership.pausedAt = undefined;
+  patient.membership.statusHistory.push({
+    action: "resumed",
+    reason: reason?.trim() || undefined,
+    performedBy: req.user._id,
+    performedAt: new Date(),
+  });
+
+  await patient.save();
+  await patient.populate("membership.statusHistory.performedBy", "name");
+
+  ApiResponse.success(
+    res,
+    {
+      patient: {
+        _id: patient._id,
+        name: patient.name,
+        phone: patient.phone,
+        hasMembership: patient.hasMembership,
+        currentDiscount: patient.currentDiscount,
+        membership: patient.membership,
+      },
+    },
+    "Membership resumed successfully"
   );
 });
 

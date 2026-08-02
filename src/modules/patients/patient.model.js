@@ -58,9 +58,36 @@ const membershipSchema = new mongoose.Schema(
     expiryDate: Date,
     status: {
       type: String,
-      enum: ["active", "expired", "cancelled"],
+      enum: ["active", "paused", "expired", "cancelled"],
       default: "active",
     },
+    // Set while paused; cleared on resume. Not currently used to auto-extend
+    // expiryDate on resume (deliberate simplicity call -- see resumeMembership).
+    pausedAt: Date,
+
+    // Admin-only audit trail for pause/resume/cancel actions on THIS
+    // membership -- distinct from patient.membershipHistory (which archives
+    // whole past membership records on renewal/reassignment). Same
+    // performedBy/performedAt/reason shape as the Reopen Treatment pattern
+    // (appointment.treatmentHistory).
+    statusHistory: [
+      {
+        action: {
+          type: String,
+          enum: ["paused", "resumed", "cancelled"],
+          required: true,
+        },
+        reason: String,
+        performedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+        },
+        performedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
 
     // -------- Manual assignment fields (admin-assigned memberships) --------
     // Amount the patient paid (₹). For manual assignments (no Razorpay).

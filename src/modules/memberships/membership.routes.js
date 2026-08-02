@@ -1,6 +1,11 @@
 import { Router } from "express";
 import * as membershipController from "./membership.controller.js";
-import { authProtect, patientProtect, optionalAuth } from "../../middlewares/auth.middleware.js";
+import { authProtect, patientProtect, optionalAuth, restrictTo } from "../../middlewares/auth.middleware.js";
+
+// Pause/Cancel/Resume touch a patient's paid financial benefit and must be
+// admin-only -- explicitly restricted beyond plain authProtect (unlike most
+// other routes in this file, which only require ANY authenticated User).
+const membershipManagerOnly = restrictTo("admin", "clinic_manager");
 
 const router = Router();
 
@@ -58,8 +63,14 @@ router.post("/assign-manual", authProtect, membershipController.assignManualMemb
 // Renew patient's membership (Admin)
 router.post("/renew/:patientId", authProtect, membershipController.renewMembership);
 
-// Cancel patient's membership (Admin)
-router.post("/cancel/:patientId", authProtect, membershipController.cancelMembership);
+// Cancel patient's membership (Admin, Clinic Manager only)
+router.post("/cancel/:patientId", authProtect, membershipManagerOnly, membershipController.cancelMembership);
+
+// Pause patient's membership -- temporary, resumable (Admin, Clinic Manager only)
+router.post("/pause/:patientId", authProtect, membershipManagerOnly, membershipController.pauseMembership);
+
+// Resume a paused membership (Admin, Clinic Manager only)
+router.post("/resume/:patientId", authProtect, membershipManagerOnly, membershipController.resumeMembership);
 
 // ==================== MEMBER MANAGEMENT ====================
 
