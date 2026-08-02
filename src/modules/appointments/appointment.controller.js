@@ -517,16 +517,20 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
  * @desc    Get appointment by ID
  * @route   GET /api/appointments/:id
  * @access  Admin
- */
-/**
- * @desc    Get appointment by ID
- * @route   GET /api/appointments/:id
- * @access  Admin
- */
-/**
- * @desc    Get appointment by ID
- * @route   GET /api/appointments/:id
- * @access  Admin
+ *
+ *          Fetch-on-click detail source for both the main Appointments page
+ *          (indirectly, via row data) and Patient Detail's Appointments/
+ *          Treatments tabs (directly, via getAppointment(id)). Must populate
+ *          `invoice` the same way getAllAppointments/updateTreatmentItems do
+ *          -- otherwise `invoice` stays a bare ObjectId, which is still
+ *          truthy, so AppointmentDetailModal's `invoice ? ... : opdFee`
+ *          branch picks the invoice branch and reads undefined
+ *          .grandTotal/.amountPaid off the ObjectId, rendering ₹0/₹0 instead
+ *          of falling back to opdFee. Confirmed via a real DB query on
+ *          UD-2608-1045: fee/opdFee both 300, linked invoice grandTotal 300
+ *          / amountPaid 300 -- correct data existed, just never populated
+ *          here. Also populate treatmentId/originatingOpdAppointment for
+ *          parity with the list endpoint.
  */
 export const getAppointmentById = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -538,7 +542,10 @@ export const getAppointmentById = asyncHandler(async (req, res) => {
   const appointment = await Appointment.findById(id)
     .populate("patient", "name phone email hasMembership currentDiscount")
     .populate("clinic", "name code address")
-    .populate("createdBy", "name");
+    .populate("createdBy", "name")
+    .populate("treatmentId", "name")
+    .populate("originatingOpdAppointment", "appointmentNumber date")
+    .populate("invoice", "invoiceNumber items subtotal discount totalTax grandTotal amountPaid balanceDue paymentStatus");
 
   if (!appointment) {
     return ApiResponse.error(res, "Appointment not found", 404);
@@ -2040,7 +2047,12 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
   if (dayStart.getTime() === todayStart.getTime()) {
     const [h, m] = String(newTimeSlot).split(":").map(Number);
     const slotMinutes = h * 60 + m;
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    // Pre-existing bug: this referenced an undefined `now` (ReferenceError on
+    // any same-day reschedule attempt). IST-safe replacement, matching the
+    // exact pattern already used by validateAppointmentSlot/getAvailableSlots
+    // above in this same file.
+    const { hour: nowHour, minute: nowMinute } = istHourMinute();
+    const nowMinutes = nowHour * 60 + nowMinute;
     if (slotMinutes <= nowMinutes) {
       return ApiResponse.error(res, "This time slot has already passed", 400);
     }
