@@ -1045,11 +1045,18 @@ export const getPatientActiveContext = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid patient ID", 400);
   }
 
-  // Get all non-cancelled treatment appointments for this patient
+  // Get all non-cancelled treatment appointments for this patient.
+  // treatmentStatus is excluded here (not just via the sessions/balance
+  // heuristic below) because a treatment explicitly closed via Close
+  // Treatment Plan (completed/closed_early/abandoned) must never show a
+  // "Book Session" button here, regardless of how many sessions were
+  // actually delivered vs planned -- mirrors the alreadyClosed rule in
+  // TreatmentPlanDetailModal.jsx (`!!appointment.treatmentStatus`).
   const treatmentAppts = await Appointment.find({
     patient: id,
     visitType: "treatment",
     status: { $ne: "cancelled" },
+    treatmentStatus: { $in: [null, undefined] },
   })
     .sort({ createdAt: -1 })
     .lean();
