@@ -491,7 +491,7 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
         amount: membershipPaid,
         description: resolvedPlanName || "Membership",
         invoiceNumber: invoice.invoiceNumber,
-      });
+      }, patient.name);
     } catch (err) {
       console.error("Auto-invoice for manual membership failed:", err.message);
     }
@@ -524,7 +524,7 @@ export const assignManualMembership = asyncHandler(async (req, res) => {
   fireWhatsApp(patient.phone, "membership_purchased", {
     planName: resolvedPlanName,
     validUntil: expiry.toLocaleDateString("en-IN"),
-  });
+  }, patient.name);
 });
 
 /**
@@ -928,7 +928,7 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
       });
 
       // New patient, portal account created just now -- fire-and-forget.
-      fireWhatsApp(patient.phone, "account_created", { password: autoPassword });
+      fireWhatsApp(patient.phone, "account_created", { password: autoPassword }, patient.name);
 
       // Send welcome email
       if (email) {
@@ -1045,7 +1045,7 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
       amount: plan.price,
       description: plan.name,
       invoiceNumber: invoice.invoiceNumber,
-    });
+    }, patient.name);
   } catch (err) {
     console.error("Auto-invoice for membership purchase failed:", err.message);
   }
@@ -1074,7 +1074,7 @@ export const purchaseMembership = asyncHandler(async (req, res) => {
   fireWhatsApp(patient.phone, "membership_purchased", {
     planName: plan.name,
     validUntil: expiryDate.toLocaleDateString("en-IN"),
-  });
+  }, patient.name);
 });
 
 /**

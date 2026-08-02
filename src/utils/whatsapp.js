@@ -133,12 +133,24 @@ const buildComponents = (templateType, phone, data) => {
 /**
  * Send a WhatsApp message via Tous Connect.
  *
+ * `patientName` is a REQUIRED, explicit parameter (not buried in `data`) --
+ * Tous Connect treats contact_name as optional and, when omitted, "guesses"
+ * a display name from the template's first body variable. Since {{1}} is
+ * often an amount or plan name (payment_recorded, membership_purchased),
+ * omitting contact_name showed conversations in the Tous Connect Inbox
+ * labeled "920" or "Premium Dental Health Plan" instead of the patient's
+ * name. contact_name is now ALWAYS sent, falling back to the phone number
+ * only in the (should-never-happen) case no name is available -- never
+ * undefined/omitted.
+ *
  * In stub mode (WHATSAPP_ENABLED !== "true", the default), this never
  * throws and never makes a network call -- it just logs and resolves.
  */
-export async function sendWhatsApp(phone, templateType, data = {}) {
+export async function sendWhatsApp(phone, templateType, data = {}, patientName) {
+  const contactName = patientName || phone;
+
   if (!WHATSAPP_ENABLED) {
-    console.log(`[WhatsApp STUB] Would send "${templateType}" to ${phone}:`, data);
+    console.log(`[WhatsApp STUB] Would send "${templateType}" to ${phone} (contact_name: ${contactName}):`, data);
     return { success: true, stubbed: true };
   }
 
@@ -160,7 +172,7 @@ export async function sendWhatsApp(phone, templateType, data = {}) {
         to: phone,
         template_name: templateName,
         template_language: "en",
-        contact_name: data.patientName || undefined,
+        contact_name: contactName,
         template_components: buildComponents(templateType, phone, data),
       }),
     });
@@ -208,14 +220,18 @@ export async function sendWhatsApp(phone, templateType, data = {}) {
  * elsewhere in this codebase for exactly this "don't block the request"
  * requirement: the async work is kicked off and its promise is caught
  * internally, but never returned/awaited by the caller.
+ *
+ * `patientName` is required (not optional) so every call site is forced to
+ * supply it -- see sendWhatsApp's doc comment for why (Tous Connect Inbox
+ * showed amounts/plan names as the contact name when this was omitted).
  */
-export function fireWhatsApp(phone, templateType, data) {
+export function fireWhatsApp(phone, templateType, data, patientName) {
   if (!phone) {
     console.error(`[WhatsApp] Skipped "${templateType}" -- no phone number available`);
     return;
   }
   try {
-    sendWhatsApp(phone, templateType, data).catch((err) => {
+    sendWhatsApp(phone, templateType, data, patientName).catch((err) => {
       console.error(`[WhatsApp] Failed to send "${templateType}" to ${phone}:`, err.message);
     });
   } catch (err) {

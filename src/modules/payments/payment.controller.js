@@ -541,7 +541,7 @@ export const createPayment = asyncHandler(async (req, res) => {
     amount,
     description: notes || (populatedPayment.invoice ? "Invoice payment" : "Advance payment"),
     invoiceNumber: populatedPayment.invoice?.invoiceNumber,
-  });
+  }, populatedPayment.patient?.name);
 
   ApiResponse.created(res, { payment: populatedPayment }, "Payment recorded successfully");
 });
@@ -583,7 +583,7 @@ export const recordOpdPayment = asyncHandler(async (req, res) => {
     amount,
     description: notes || "OPD Fee",
     invoiceNumber: undefined,
-  });
+  }, populatedPayment.patient?.name);
 
   ApiResponse.created(res, { payment: populatedPayment }, "OPD payment recorded successfully");
 });
@@ -624,7 +624,7 @@ export const recordMembershipPayment = asyncHandler(async (req, res) => {
     amount,
     description: notes || `Membership: ${planName || "Plan"}`,
     invoiceNumber: undefined,
-  });
+  }, populatedPayment.patient?.name);
 
   ApiResponse.created(res, { payment: populatedPayment }, "Membership payment recorded successfully");
 });
@@ -1003,7 +1003,7 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
       amount: payment.amount,
       description: payment.treatmentName || payment.notes || "Payment",
       invoiceNumber: populatedPayment.invoice?.invoiceNumber,
-    });
+    }, populatedPayment.patient?.name);
   }
 });
 
@@ -1690,7 +1690,7 @@ export const recordAdminPayment = asyncHandler(async (req, res) => {
       ? `Invoice ${settledInvoices[0].invoiceNumber}`
       : `${settledInvoices.length} invoices`,
     invoiceNumber: settledInvoices[0]?.invoiceNumber,
-  });
+  }, patient.name);
 
   return ApiResponse.success(
     res,
@@ -1863,12 +1863,12 @@ export const collectPayment = asyncHandler(async (req, res) => {
   // self-contained fire-and-forget lookup, never awaited by the caller.
   (async () => {
     try {
-      const payer = await Patient.findById(invoice.patient).select("phone");
+      const payer = await Patient.findById(invoice.patient).select("phone name");
       fireWhatsApp(payer?.phone, "payment_recorded", {
         amount: numAmount,
         description: notes || `Invoice ${invoice.invoiceNumber}`,
         invoiceNumber: invoice.invoiceNumber,
-      });
+      }, payer?.name);
     } catch (err) {
       console.error("[WhatsApp] payment_recorded lookup failed:", err.message);
     }
@@ -2077,7 +2077,7 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       amount: verifiedAmount,
       description: `Invoice ${invoice.invoiceNumber}`,
       invoiceNumber: invoice.invoiceNumber,
-    });
+    }, req.patient?.name);
   } else {
     // ── Total-balance FIFO settlement (existing behaviour — unchanged) ───────
     const invoices = await Invoice.find({
@@ -2125,7 +2125,7 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       amount: verifiedAmount,
       description: "Pending balance payment",
       invoiceNumber: undefined,
-    });
+    }, req.patient?.name);
   }
 
   return ApiResponse.success(res, { success: true }, "Payment successful");

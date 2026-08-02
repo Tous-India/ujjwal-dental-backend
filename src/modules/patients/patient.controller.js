@@ -396,7 +396,7 @@ export const createPatient = asyncHandler(async (req, res) => {
 
   // New patient, portal account created just now -- fire-and-forget, never
   // blocks/fails the response below.
-  fireWhatsApp(patient.phone, "account_created", { password: "account123" });
+  fireWhatsApp(patient.phone, "account_created", { password: "account123" }, patient.name);
 
   ApiResponse.created(res, { patient }, "Patient created successfully");
 });

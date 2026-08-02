@@ -674,7 +674,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
       // is set on this path (admin can set one later via reset-password), so
       // there's no credential to relay yet -- fire-and-forget regardless,
       // matching every other new-patient trigger point.
-      fireWhatsApp(patient.phone, "account_created", { password: null });
+      fireWhatsApp(patient.phone, "account_created", { password: null }, patient.name);
     }
   }
 
@@ -806,7 +806,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
 
     dispatchBookingNotifications(sessionAppt._id);
 
-    fireWhatsApp(patient.phone, "session_booked", { date, time: timeSlot });
+    fireWhatsApp(patient.phone, "session_booked", { date, time: timeSlot }, patient.name);
 
     const populated = await Appointment.findById(sessionAppt._id)
       .populate("patient", "name phone email")
@@ -1039,7 +1039,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
             amount: requestAmountPaid ?? resolvedFee,
             description: lineItemDescription,
             invoiceNumber: invoice.invoiceNumber,
-          });
+          }, patient.name);
         } catch (payErr) {
           // Log but do NOT fail the booking — the invoice already reflects the collection
           console.error("[createAppointment] Failed to create Payment doc for OPD fee:", payErr?.message);
@@ -1200,7 +1200,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
 
     // New patient, portal account created just now. No password (passwordless
     // OTP login here, same as the welcome email below) -- fire-and-forget.
-    fireWhatsApp(patient.phone, "account_created", { password: null });
+    fireWhatsApp(patient.phone, "account_created", { password: null }, patient.name);
 
     // Send a welcome email that directs the patient to passwordless OTP login.
     if (email) {
@@ -1334,7 +1334,7 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
       amount: payment.amount,
       description: "OPD Consultation",
       invoiceNumber,
-    });
+    }, patient.name);
   }
 
   /* =======================
@@ -1700,12 +1700,12 @@ export const updateAppointment = asyncHandler(async (req, res) => {
           // self-contained fire-and-forget lookup, never awaited by the caller.
           (async () => {
             try {
-              const payer = await Patient.findById(invoice.patient).select("phone");
+              const payer = await Patient.findById(invoice.patient).select("phone name");
               fireWhatsApp(payer?.phone, "payment_recorded", {
                 amount: paymentDelta,
                 description: appointment.visitType === "treatment" ? "Treatment" : "OPD Fee",
                 invoiceNumber: invoice.invoiceNumber,
-              });
+              }, payer?.name);
             } catch (err) {
               console.error("[WhatsApp] payment_recorded lookup failed:", err.message);
             }

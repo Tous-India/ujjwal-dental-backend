@@ -1096,12 +1096,19 @@ export const getBillingStats = asyncHandler(async (req, res) => {
  * fix above — is incomplete for payments never linked to (or reflected in)
  * an invoice. totalPaid now uses getPatientTotalPaid(), the exact same
  * Payment-collection-based total the payment history list already shows, so
- * the summary cards and the list never disagree. totalDue is then computed
- * (never read from the stale stored balanceDue) and floored at 0 for
- * display — a patient can't owe a negative amount, though a paid total that
- * exceeds the billed total is itself a sign one of their invoices has an
- * incorrect grandTotal, a separate data issue this read-only fix does not
- * (and should not) silently correct.
+ * the summary cards and the list never disagree.
+ *
+ * totalDue must NEVER be `totalAmount - totalPaid` here either — same
+ * per-invoice-clamped reasoning as getBillingStats below (see that
+ * function's comment). A patient-wide Payment sum can include money
+ * collected against ONE invoice that was later edited down (e.g. discounted
+ * to ₹0), which naive subtraction would silently net against a genuinely
+ * unpaid DIFFERENT invoice, hiding real balance due from the patient.
+ * Confirmed via real data: a patient with one invoice whose payment was
+ * reversed (still fully due) and a separate ₹0 invoice that had absorbed an
+ * unrelated real payment showed totalDue = ₹0 under naive subtraction, when
+ * they actually still owed ₹300 — the exact bug this now avoids, mirroring
+ * getBillingStats/getRealPaidByInvoiceMap's already-proven-correct approach.
  */
 export const getMyBillingSummary = asyncHandler(async (req, res) => {
   const patientId = req.patient?._id;
@@ -1117,7 +1124,13 @@ export const getMyBillingSummary = asyncHandler(async (req, res) => {
 
   const stats = await Invoice.getStats(matchQuery);
   const totalPaid = await getPatientTotalPaid(patientId);
-  const totalDue = Math.max(0, (stats.totalAmount || 0) - totalPaid);
+
+  const patientInvoices = await Invoice.find(matchQuery).select("_id grandTotal").lean();
+  const realPaidByInvoice = await getRealPaidByInvoiceMap(patientInvoices.map((inv) => inv._id));
+  const totalDue = patientInvoices.reduce((sum, inv) => {
+    const real = realPaidByInvoice.get(String(inv._id)) || 0;
+    return sum + Math.max(0, (inv.grandTotal || 0) - real);
+  }, 0);
 
   ApiResponse.success(
     res,
