@@ -255,11 +255,28 @@ const appointmentSchema = new mongoose.Schema(
       default: false,
     },
 
-    // Payment method recorded for this appointment.
+    // Payment method recorded for this appointment. "online" is kept for the
+    // pre-existing patient-facing embedded-checkout flow (bookAppointmentWithPayment
+    // / the public booking + Razorpay Orders API integration) -- "upi" and
+    // "razorpay" are the new admin-booking values (cash/UPI = record-only,
+    // razorpay = generates a real Payment Link, see razorpayLinks.js).
     paymentMethod: {
       type: String,
-      enum: ["cash", "online", "free"],
+      enum: ["cash", "upi", "razorpay", "online", "free"],
       default: "cash",
+    },
+
+    // Razorpay Payment Link details -- denormalized copy of the linked
+    // invoice's paymentLink (see invoice.model.js) so the admin UI can show
+    // the current link (for manual-copy fallback) without populating the
+    // invoice. Overwritten each time the admin (re)selects "razorpay" as the
+    // payment method (createAppointment or updateAppointment).
+    paymentLinkUrl: { type: String, default: null },
+    paymentLinkId: { type: String, default: null },
+    paymentLinkStatus: {
+      type: String,
+      enum: ["created", "paid", "cancelled", "expired", null],
+      default: null,
     },
 
     // Payment status (kept in sync with the linked invoice via PATCH handler).

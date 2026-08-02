@@ -1096,6 +1096,120 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
       break;
     }
 
+    case "payment_link.paid": {
+      // Admin-generated Payment Link flow (razorpayLinks.js) -- distinct from
+      // the payment.captured case above (embedded-checkout Orders API flow,
+      // keyed off Payment.razorpayOrderId). Here there is no pre-existing
+      // pending Payment document to find -- the link was generated directly
+      // against an Invoice, so we look the invoice up and create the Payment
+      // now, reusing the same settledInvoices-only pattern proven in
+      // collectPayment/recordAdminPayment (never sets payment.invoice --
+      // that would double-apply via the post-save hook, since amountPaid is
+      // set directly on the invoice below).
+      const linkEntity = payload.payment_link?.entity;
+      const paidPaymentEntity = payload.payment?.entity; // the underlying payment that settled the link
+
+      if (!linkEntity) {
+        console.error("[Webhook] payment_link.paid: missing payload.payment_link.entity");
+        break;
+      }
+
+      // Look up by reference_id (= invoice._id, set at link creation time)
+      // first; fall back to a stored paymentLink.id match in case
+      // reference_id is ever missing/stale.
+      let invoice = null;
+      if (linkEntity.reference_id && mongoose.Types.ObjectId.isValid(linkEntity.reference_id)) {
+        invoice = await Invoice.findById(linkEntity.reference_id);
+      }
+      if (!invoice && linkEntity.id) {
+        invoice = await Invoice.findOne({ "paymentLink.id": linkEntity.id });
+      }
+
+      if (!invoice) {
+        console.error(
+          `[Webhook] payment_link.paid: no invoice found for reference_id=${linkEntity.reference_id} / link id=${linkEntity.id}`
+        );
+        break;
+      }
+
+      // Idempotency -- Razorpay may retry webhook delivery; never double-apply.
+      if (invoice.paymentLink?.status === "paid") {
+        console.log(`[Webhook] payment_link.paid already processed for invoice ${invoice.invoiceNumber}`);
+        break;
+      }
+
+      const capturedAmount = Math.max(0, Number(linkEntity.amount_paid ?? linkEntity.amount ?? 0) / 100);
+      const previousAmountPaid = invoice.amountPaid || 0;
+      const applyAmount = capturedAmount > 0 ? capturedAmount : Math.max(0, invoice.grandTotal - previousAmountPaid);
+
+      invoice.amountPaid = previousAmountPaid + applyAmount;
+      invoice.paymentLink = {
+        id: invoice.paymentLink?.id || linkEntity.id,
+        shortUrl: invoice.paymentLink?.shortUrl || linkEntity.short_url,
+        status: "paid",
+        createdAt: invoice.paymentLink?.createdAt || new Date(),
+        paidAt: new Date(),
+      };
+      await invoice.save(); // pre-save hook recalculates grandTotal/paymentStatus/balanceDue
+
+      const payment = await Payment.createSafe({
+        patient: invoice.patient,
+        clinic: invoice.clinic,
+        appointment: invoice.appointment,
+        amount: applyAmount,
+        paymentMode: "razorpay",
+        type: invoice.items?.[0]?.itemType === "opd_fee" ? "opd_fee" : "treatment",
+        status: "paid",
+        paidAt: new Date(),
+        razorpayPaymentId: paidPaymentEntity?.id,
+        razorpayPaymentLinkId: linkEntity.id,
+        razorpayDetails: paidPaymentEntity
+          ? { method: paidPaymentEntity.method, bank: paidPaymentEntity.bank, wallet: paidPaymentEntity.wallet, vpa: paidPaymentEntity.vpa }
+          : undefined,
+        notes: `Paid via Razorpay Payment Link (${linkEntity.id})`,
+        settledInvoices: [
+          {
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoiceNumber,
+            appliedAmount: applyAmount,
+            previousAmountPaid,
+          },
+        ],
+      });
+
+      // Keep the appointment's denormalized payment state in sync, if linked.
+      if (invoice.appointment) {
+        const linkedAppointment = await Appointment.findById(invoice.appointment);
+        if (linkedAppointment) {
+          linkedAppointment.opdFeePaid = true;
+          if (invoice.paymentStatus === "paid") linkedAppointment.paymentStatus = "paid";
+          linkedAppointment.paymentLinkStatus = "paid";
+          await linkedAppointment.save();
+        }
+      }
+
+      console.log(
+        `[Webhook] payment_link.paid processed for invoice ${invoice.invoiceNumber}, payment ${payment.paymentNumber}, amount ₹${applyAmount}`
+      );
+
+      // Fire-and-forget notification -- mirrors every other payment-recorded
+      // notify call site in this file.
+      (async () => {
+        try {
+          const payer = await Patient.findById(invoice.patient).select("phone name");
+          fireWhatsApp(payer?.phone, "payment_recorded", {
+            amount: applyAmount,
+            description: invoice.items?.[0]?.description || "Payment",
+            invoiceNumber: invoice.invoiceNumber,
+          }, payer?.name);
+        } catch (err) {
+          console.error("[Webhook] payment_recorded notify lookup failed:", err.message);
+        }
+      })();
+
+      break;
+    }
+
     case "refund.processed": {
       const refundEntity = payload.refund.entity;
       const payment = await Payment.findOne({

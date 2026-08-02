@@ -35,6 +35,8 @@ export const WHATSAPP_TEMPLATES = {
     "Payment received: Rs{amount} for {description} at Ujjwal Dental Clinic. Invoice: {invoiceNumber}. Thank you!",
   session_booked:
     "Your next treatment session is confirmed for {date} at {time}, Ujjwal Dental Clinic. See you soon!",
+  payment_link:
+    "Hi! Please complete your payment of Rs{amount} for {description} at Ujjwal Dental Clinic using this secure link: {shortUrl}",
 };
 
 /**
@@ -56,6 +58,14 @@ export const TEMPLATE_NAME_MAP = {
   appointment_reminder_2h: "appointment_reminder_2h",
   session_booked: "session_booked",
   report_shared: "report_shared",
+  // NOT YET APPROVED by Meta as of this writing -- Sunny still needs to submit
+  // this draft to Tous Connect for approval (see WHATSAPP_TEMPLATES.payment_link
+  // above for the exact draft copy/variable order). Until then, real sends
+  // return the same clean 502 "unapproved template" response every other
+  // not-yet-approved template already gets -- expected, not a bug. The
+  // Razorpay short_url is ALWAYS returned/stored regardless, so the admin UI
+  // can show it for manual copy no matter what this send does.
+  payment_link: "payment_link",
 };
 
 // WhatsApp template body parameters must be non-empty strings.
@@ -102,6 +112,12 @@ const buildBodyParams = (templateType, phone, data) => {
       ];
     case "report_shared":
       return [textParam(data.reportTitle || "your report")];
+    case "payment_link":
+      return [
+        textParam(data.amount),
+        textParam(data.description || "your treatment"),
+        textParam(data.shortUrl),
+      ];
     default:
       return [];
   }

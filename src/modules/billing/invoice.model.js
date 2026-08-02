@@ -250,6 +250,25 @@ const invoiceSchema = new mongoose.Schema(
       default: [],
     },
     cancellationReason: String,
+
+    // Razorpay Payment Link (admin-generated, distinct from the patient-facing
+    // embedded-checkout Orders API flow). Populated when the admin selects
+    // "Razorpay" as the payment method at booking time or via Change Payment
+    // Method. reference_id sent to Razorpay is this invoice's _id, so the
+    // payment_link.paid webhook can look the invoice up directly. Kept
+    // (never deleted) even if the method is later switched away -- historical
+    // record of the last link generated for this invoice.
+    paymentLink: {
+      id: { type: String, default: null },
+      shortUrl: { type: String, default: null },
+      status: {
+        type: String,
+        enum: ["created", "paid", "cancelled", "expired", null],
+        default: null,
+      },
+      createdAt: { type: Date, default: null },
+      paidAt: { type: Date, default: null },
+    },
   },
   {
     timestamps: true,
@@ -262,6 +281,7 @@ invoiceSchema.index({ patient: 1, createdAt: -1 });
 // invoiceSchema.index({ invoiceNumber: 1 });
 invoiceSchema.index({ status: 1 });
 invoiceSchema.index({ paymentStatus: 1 });
+invoiceSchema.index({ "paymentLink.id": 1 });
 
 // ============ PRE-SAVE MIDDLEWARE ============
 

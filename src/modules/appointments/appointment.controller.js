@@ -12,9 +12,10 @@ import Invoice from "../billing/invoice.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 import dispatchBookingNotifications from "../../utils/dispatchBookingNotifications.js";
-import { fireWhatsApp } from "../../utils/whatsapp.js";
+import { fireWhatsApp, sendWhatsApp } from "../../utils/whatsapp.js";
 import { istDateString, istHourMinute } from "../../utils/istTime.js";
 import { istStartOfDay, istEndOfDay } from "../../utils/istDateRange.js";
+import { generateRazorpayPaymentLink } from "../../utils/razorpayLinks.js";
 
 /**
  * APPOINTMENT CONTROLLER
@@ -37,16 +38,24 @@ const MIN_BACKDATE_DAYS = 10;
 const canBackdate = (user) =>
   !!user && ["admin", "clinic_manager"].includes(user.role);
 
-// Maps appointment.paymentMethod's enum (cash/online/free) to
+// Maps appointment.paymentMethod's enum (cash/upi/razorpay/online/free) to
 // Payment.paymentMode's enum (cash/card/upi/razorpay/netbanking/other) --
 // the two fields are on different schemas with different allowed values,
 // same mismatch already handled in membership.controller.js's
 // toPaymentMode() for the same reason.
 const toPaymentMode = (method) => {
   if (method === "cash") return "cash";
-  if (method === "online") return "razorpay";
+  if (method === "upi") return "upi";
+  if (method === "razorpay") return "razorpay";
+  if (method === "online") return "razorpay"; // legacy value, pre-existing patient checkout flow
   return "other";
 };
+
+// The 3 payment methods the ADMIN booking flow (createAppointment/
+// updateAppointment) accepts -- "online"/"free" are set by other flows
+// (patient checkout, free/membership appointments) and never chosen directly
+// via this selector.
+const ADMIN_PAYMENT_METHODS = ["cash", "upi", "razorpay"];
 
 /**
  * Effective seats for a slot given the incoming booking type:
@@ -956,7 +965,13 @@ export const createAppointment = asyncHandler(async (req, res) => {
     opdFee: resolvedFee,
     isFree: appointmentIsFree,
     opdFeePaid: appointmentOpdFeePaid,
-    paymentMethod: appointmentIsFree ? "free" : (incomingPaymentMethod === "online" ? "online" : "cash"),
+    paymentMethod: appointmentIsFree
+      ? "free"
+      : incomingPaymentMethod === "online"
+      ? "online" // legacy value -- pre-existing patient checkout flow, left untouched
+      : ADMIN_PAYMENT_METHODS.includes(incomingPaymentMethod)
+      ? incomingPaymentMethod
+      : "cash",
     paymentStatus: appointmentIsFree ? "free" : (appointmentOpdFeePaid ? "paid" : "unpaid"),
     source: source || "walk_in",
     notes,
@@ -972,6 +987,10 @@ export const createAppointment = asyncHandler(async (req, res) => {
   ======================== */
 
   let invoiceId = null;
+  // Populated only when incomingPaymentMethod === "razorpay" -- returned in the
+  // response AND stored on the appointment/invoice regardless of the WhatsApp
+  // send outcome, so the admin UI can always show the link for manual copy.
+  let paymentLinkResult = null;
   if (!appointmentIsFree && resolvedFee > 0) {
     try {
       // Treatment bookings may carry multiple line items (e.g. "Root Canal" +
@@ -1008,13 +1027,58 @@ export const createAppointment = asyncHandler(async (req, res) => {
           : {}),
         amountPaid: 0,
         paymentMethod: appointmentOpdFeePaid
-          ? (incomingPaymentMethod === "online" ? "online" : "cash")
+          ? (ADMIN_PAYMENT_METHODS.includes(incomingPaymentMethod) ? incomingPaymentMethod : "cash")
           : "pay-at-clinic",
         createdBy: req.user?._id,
       });
       invoiceId = invoice._id;
       appointment.invoice = invoice._id;
       await appointment.save();
+
+      // Razorpay Payment Link -- generated whenever the admin selects "razorpay"
+      // as the payment method, for EITHER visit type (opd or treatment).
+      // invoice.grandTotal is used (never a hardcoded/wrong total): generateInvoice()
+      // already computed it correctly per visit type -- the OPD consultation fee,
+      // or the treatment's post-discount fee-items total.
+      if (incomingPaymentMethod === "razorpay") {
+        try {
+          const { shortUrl, paymentLinkId } = await generateRazorpayPaymentLink(invoice, patient);
+          invoice.paymentLink = {
+            id: paymentLinkId,
+            shortUrl,
+            status: "created",
+            createdAt: new Date(),
+            paidAt: null,
+          };
+          await invoice.save();
+          appointment.paymentLinkUrl = shortUrl;
+          appointment.paymentLinkId = paymentLinkId;
+          appointment.paymentLinkStatus = "created";
+          await appointment.save();
+
+          // Awaited (unlike every other fireWhatsApp call site in this file) --
+          // the admin UI needs the REAL send outcome to show "Sent via
+          // WhatsApp" vs "send failed, copy manually", not just fire-and-
+          // forget. sendWhatsApp() never throws (it catches internally and
+          // returns {success:false,...}), so this cannot fail or block the
+          // booking response -- it only adds one network round-trip's latency.
+          const waResult = await sendWhatsApp(
+            patient.phone,
+            "payment_link",
+            { amount: invoice.grandTotal, description: lineItemDescription, shortUrl },
+            patient.name
+          );
+
+          paymentLinkResult = {
+            shortUrl,
+            paymentLinkId,
+            whatsappSent: !!waResult?.success,
+          };
+        } catch (linkErr) {
+          console.error("[createAppointment] Razorpay payment link generation failed:", linkErr.message);
+          paymentLinkResult = { error: linkErr.message };
+        }
+      }
 
       if (appointmentOpdFeePaid) {
         try {
@@ -1025,7 +1089,7 @@ export const createAppointment = asyncHandler(async (req, res) => {
             invoice: invoice._id,
             type: appointmentVisitType === "treatment" ? "treatment" : "opd_fee",
             amount: requestAmountPaid ?? resolvedFee,
-            paymentMode: ["cash", "card", "upi"].includes(incomingPaymentMethod)
+            paymentMode: ["cash", "card", "upi", "razorpay"].includes(incomingPaymentMethod)
               ? incomingPaymentMethod
               : "cash",
             status: "paid",
@@ -1071,6 +1135,11 @@ export const createAppointment = asyncHandler(async (req, res) => {
       isFree: appointment.isFree,
       opdFeePaid: appointment.opdFeePaid,
       invoiceId,
+      // Only set when incomingPaymentMethod === "razorpay". `shortUrl` is
+      // always present here regardless of whatsappSent (Part 4's manual-copy
+      // fallback requirement) -- `error` is set instead if link generation
+      // itself failed (e.g. Razorpay API down).
+      paymentLink: paymentLinkResult,
       patient: {
         id: patient._id,
         name: patient.name,
@@ -1614,7 +1683,25 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     }
   }
 
-  if (paymentMethod !== undefined) appointment.paymentMethod = paymentMethod;
+  // Payment method stays editable any time before the appointment/treatment
+  // is marked complete -- same "editable until completed" rule already
+  // established for treatment fee edits (updateTreatmentItems, gated on
+  // treatmentStatus). Applies to BOTH visit types: OPD gates on
+  // appointment.status === "completed"; treatment additionally gates on
+  // treatmentStatus being set (the treatment plan is closed).
+  const previousPaymentMethod = appointment.paymentMethod;
+  if (paymentMethod !== undefined) {
+    if (appointment.status === "completed") {
+      return ApiResponse.error(res, "Cannot change payment method on a completed appointment", 400);
+    }
+    if (appointment.visitType === "treatment" && appointment.treatmentStatus) {
+      return ApiResponse.error(res, "Cannot change payment method on a closed treatment plan", 400);
+    }
+    if (!["cash", "upi", "razorpay", "online", "free"].includes(paymentMethod)) {
+      return ApiResponse.error(res, "Invalid payment method", 400);
+    }
+    appointment.paymentMethod = paymentMethod;
+  }
   if (paymentStatus !== undefined) appointment.paymentStatus = paymentStatus;
 
   /* =======================
@@ -1716,6 +1803,54 @@ export const updateAppointment = asyncHandler(async (req, res) => {
   }
 
   /* =======================
+     RAZORPAY LINK (RE)GENERATION
+     Switching the payment method TO "razorpay" generates a FRESH link (the
+     old one may be stale). Switching AWAY needs no cleanup -- any Payment
+     already collected via a prior link stays valid; only the method
+     preference for FUTURE collection changes (see the "editable until
+     completed" comment above).
+  ======================== */
+  let paymentLinkResult = null;
+  if (paymentMethod === "razorpay" && previousPaymentMethod !== "razorpay" && appointment.invoice) {
+    try {
+      const invoiceForLink = await Invoice.findById(appointment.invoice);
+      const patientForLink = await Patient.findById(appointment.patient).select("name phone");
+      if (invoiceForLink && patientForLink && invoiceForLink.grandTotal > 0) {
+        const { shortUrl, paymentLinkId } = await generateRazorpayPaymentLink(invoiceForLink, patientForLink);
+        invoiceForLink.paymentLink = {
+          id: paymentLinkId,
+          shortUrl,
+          status: "created",
+          createdAt: new Date(),
+          paidAt: null,
+        };
+        await invoiceForLink.save();
+        appointment.paymentLinkUrl = shortUrl;
+        appointment.paymentLinkId = paymentLinkId;
+        appointment.paymentLinkStatus = "created";
+
+        // Awaited for the same reason as createAppointment -- the admin UI
+        // needs the real send outcome, and sendWhatsApp() never throws.
+        const waResult = await sendWhatsApp(
+          patientForLink.phone,
+          "payment_link",
+          {
+            amount: invoiceForLink.grandTotal,
+            description: invoiceForLink.items?.[0]?.description || "Payment",
+            shortUrl,
+          },
+          patientForLink.name
+        );
+
+        paymentLinkResult = { shortUrl, paymentLinkId, whatsappSent: !!waResult?.success };
+      }
+    } catch (linkErr) {
+      console.error("[updateAppointment] Razorpay payment link regeneration failed:", linkErr.message);
+      paymentLinkResult = { error: linkErr.message };
+    }
+  }
+
+  /* =======================
      SAVE
   ======================== */
   await appointment.save();
@@ -1728,9 +1863,12 @@ export const updateAppointment = asyncHandler(async (req, res) => {
     .populate("clinic")
     .populate("createdBy", "name");
 
+  const responseData = updatedAppointment.toObject();
+  if (paymentLinkResult) responseData.paymentLink = paymentLinkResult;
+
   ApiResponse.success(
     res,
-    updatedAppointment,
+    responseData,
     "Appointment updated successfully",
   );
 });

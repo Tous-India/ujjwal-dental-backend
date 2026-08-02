@@ -99,6 +99,10 @@ const paymentSchema = new mongoose.Schema(
     razorpayOrderId: String,
     razorpayPaymentId: String,
     razorpaySignature: String,
+    // Set only for payments collected via the admin-generated Payment Links
+    // flow (razorpayLinks.js + payment_link.paid webhook) -- distinct from
+    // razorpayOrderId (the embedded-checkout Orders API flow).
+    razorpayPaymentLinkId: String,
 
     // Razorpay additional details
     razorpayDetails: {
