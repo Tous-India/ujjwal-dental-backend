@@ -1,21 +1,31 @@
 /**
- * WHATSAPP NOTIFICATION DISPATCH (Tous Connect integration -- STUBBED)
+ * WHATSAPP NOTIFICATION DISPATCH (Tous Connect integration)
  *
  * Centralized entry point for every WhatsApp notification sent by the app.
- * The real Tous Connect API call is intentionally NOT implemented yet --
- * credentials aren't available. Until then, WHATSAPP_ENABLED stays "false"
- * (the default) and every call just logs what WOULD have been sent.
+ * WHATSAPP_ENABLED stays "false" (the default) until real credentials are
+ * configured -- until then every call just logs what WOULD have been sent.
  *
- * When real credentials arrive, only `sendWhatsApp()` below needs to change --
- * every call site (account creation, membership purchase, payment recorded,
- * session booked) already calls through this one function via `fireWhatsApp`.
+ * All messages use type:"template" (never "text") -- these are business-
+ * initiated notifications, not replies within a 24h service window, so only
+ * a template can (re)open the conversation per Tous Connect's docs.
+ *
+ * Every call site (account creation, membership purchase, payment recorded,
+ * session booked, ...) goes through this one function via `fireWhatsApp` --
+ * never call sendWhatsApp() directly and await it inline.
  */
 
-const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED === "true"; // default OFF until real credentials exist
+const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED === "true";
+const TOUS_CONNECT_API_KEY = process.env.TOUS_CONNECT_API_KEY;
+const TOUS_CONNECT_URL = "https://connect.thetous.com/api/v1/messages/send";
 
-// Draft copy only -- not yet Meta-approved WhatsApp templates. Kept here for
-// reference / future rendering; sendWhatsApp() does not render these in stub
-// mode, it just logs the template type + data.
+// Shown in the account_created template -- not tied to any specific call
+// site's data, same across the whole clinic.
+const CLINIC_CONTACT_PHONE = process.env.CLINIC_CONTACT_PHONE || "the clinic";
+
+// Draft copy only -- kept for reference / any future non-template rendering.
+// Not used to build the real request below (that's driven by
+// TEMPLATE_NAME_MAP + buildBodyParams instead, per Tous Connect's
+// template_components shape).
 export const WHATSAPP_TEMPLATES = {
   account_created:
     "Welcome to Ujjwal Dental Clinic! Your patient portal is ready. Login: https://ujjwaldentalplanet.com/login | Username: {phone} | Password: {password}",
@@ -28,26 +38,159 @@ export const WHATSAPP_TEMPLATES = {
 };
 
 /**
+ * Maps our internal templateType values to the EXACT template_name string
+ * registered in Tous Connect's dashboard. Sunny may name these slightly
+ * differently than this draft when she submits them for Meta approval --
+ * this map is the one place to update, not a deep refactor.
+ */
+export const TEMPLATE_NAME_MAP = {
+  account_created: "account_created",
+  membership_purchased: "membership_purchased",
+  payment_recorded: "payment_recorded",
+  appointment_reminder_24h: "appointment_reminder_24h",
+  appointment_reminder_2h: "appointment_reminder_2h",
+  session_booked: "session_booked",
+  report_shared: "report_shared",
+};
+
+// WhatsApp template body parameters must be non-empty strings.
+const textParam = (value) => ({
+  type: "text",
+  text: value === null || value === undefined || value === "" ? "-" : String(value),
+});
+
+/**
+ * Ordered {{1}}, {{2}}, ... body parameters per template. Existing call
+ * sites don't always pass every field a template drafts for (e.g. no call
+ * site currently sends a "date" for payment_recorded, or "clinic"/
+ * "treatment" for session_booked) -- rather than touch every call site
+ * again here, missing fields fall back to a sensible default so a real send
+ * is never malformed by a missing param.
+ */
+const buildBodyParams = (templateType, phone, data) => {
+  switch (templateType) {
+    case "account_created":
+      return [
+        textParam(phone),
+        textParam(data.password || "your default password -- contact us if you don't have it"),
+        textParam(CLINIC_CONTACT_PHONE),
+      ];
+    case "membership_purchased":
+      return [textParam(data.planName), textParam(data.validUntil)];
+    case "payment_recorded":
+      return [
+        textParam(data.amount),
+        textParam(data.description),
+        textParam(data.invoiceNumber),
+        textParam(data.date || new Date().toLocaleDateString("en-IN")),
+      ];
+    case "appointment_reminder_24h":
+    case "appointment_reminder_2h":
+      return [textParam(data.date), textParam(data.time), textParam(data.clinic || "Ujjwal Dental Clinic")];
+    case "session_booked":
+      return [
+        textParam(data.treatment || "your treatment"),
+        textParam(data.date),
+        textParam(data.time),
+        textParam(data.clinic || "Ujjwal Dental Clinic"),
+      ];
+    case "report_shared":
+      return [textParam(data.reportTitle || "your report")];
+    default:
+      return [];
+  }
+};
+
+const buildComponents = (templateType, phone, data) => {
+  const components = [{ type: "body", parameters: buildBodyParams(templateType, phone, data) }];
+
+  // Media-template case: report_shared attaches the real report file as a
+  // document header, per Tous Connect's docs.
+  if (templateType === "report_shared" && data.fileUrl) {
+    components.push({
+      type: "header",
+      parameters: [
+        {
+          type: "document",
+          document: {
+            link: data.fileUrl,
+            filename: data.fileName || "report.pdf",
+          },
+        },
+      ],
+    });
+  }
+
+  return components;
+};
+
+/**
  * Send a WhatsApp message via Tous Connect.
  *
  * In stub mode (WHATSAPP_ENABLED !== "true", the default), this never
  * throws and never makes a network call -- it just logs and resolves.
- *
- * Once WHATSAPP_ENABLED="true", this throws until the real integration
- * below is implemented -- callers MUST use `fireWhatsApp` (never call this
- * directly and await it inline in a way that could block/fail the caller).
  */
-export async function sendWhatsApp(phone, templateType, data) {
+export async function sendWhatsApp(phone, templateType, data = {}) {
   if (!WHATSAPP_ENABLED) {
     console.log(`[WhatsApp STUB] Would send "${templateType}" to ${phone}:`, data);
     return { success: true, stubbed: true };
   }
-  // TODO: real Tous Connect API call goes here once credentials are available.
-  // Expected shape (placeholder, will be corrected once real API docs are in hand):
-  //   POST https://api.tousconnect.com/send (or whatever the real endpoint is)
-  //   headers: { Authorization: `Bearer ${process.env.TOUS_CONNECT_API_KEY}` }
-  //   body: { to: phone, template: templateType, variables: data }
-  throw new Error("WHATSAPP_ENABLED is true but real Tous Connect integration not yet implemented");
+
+  const templateName = TEMPLATE_NAME_MAP[templateType];
+  if (!templateName) {
+    console.error(`[WhatsApp] Unknown templateType "${templateType}" -- no template name mapped`);
+    return { success: false, error: "Unknown template type" };
+  }
+
+  try {
+    const response = await fetch(TOUS_CONNECT_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOUS_CONNECT_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "template",
+        to: phone,
+        template_name: templateName,
+        template_language: "en",
+        contact_name: data.patientName || undefined,
+        template_components: buildComponents(templateType, phone, data),
+      }),
+    });
+
+    let result = null;
+    try {
+      result = await response.json();
+    } catch {
+      // Non-JSON error body -- fall through with result=null, status/ok still handled below.
+    }
+
+    if (!response.ok) {
+      // 502 is the EXPECTED state while templates await Meta approval --
+      // logged as a warning, not an error, and never treated as a code bug.
+      if (response.status === 502) {
+        console.warn(
+          `[WhatsApp] Meta rejected send (likely unapproved template "${templateName}"), expected during approval wait:`,
+          result?.error || result
+        );
+      } else if (response.status === 401) {
+        console.error("[WhatsApp] 401 bad API key -- check TOUS_CONNECT_API_KEY config:", result?.error || result);
+      } else if (response.status === 402) {
+        console.error("[WhatsApp] 402 insufficient Meta credits -- needs funds added:", result?.error || result);
+      } else if (response.status === 400) {
+        console.error("[WhatsApp] 400 validation error, not retrying:", result?.error || result);
+      } else {
+        console.error(`[WhatsApp] Send failed (${response.status}):`, result?.error || result);
+      }
+      return { success: false, status: response.status, error: result?.error || result };
+    }
+
+    return { success: true, ...result };
+  } catch (err) {
+    console.error("[WhatsApp] Unexpected error:", err.message);
+    return { success: false, error: err.message };
+  }
 }
 
 /**
