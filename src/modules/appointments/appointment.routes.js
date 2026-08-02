@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import * as appointmentController from "./appointment.controller.js";
 import authProtect, { anyAuth, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
 import { checkPermission } from "../../middlewares/permission.middleware.js";
@@ -93,8 +94,42 @@ router.post("/:id/close-treatment", authProtect, checkPermission("appointments",
 // Reopen a closed treatment (mandatory reason, full audit trail) — admin / clinic manager
 router.post("/:id/reopen-treatment", authProtect, checkPermission("appointments", "edit"), appointmentController.reopenTreatment);
 
+// Edit a treatment plan's name/line items/discount — available throughout the
+// active lifecycle (any number of sessions delivered), locked once closed —
+// admin / clinic manager
+router.patch(
+  "/:id/treatment-items",
+  authProtect,
+  checkPermission("appointments", "edit"),
+  appointmentController.updateTreatmentItems
+);
+
 // Delete appointment permanently — admin / clinic manager
 router.delete("/:id", authProtect, checkPermission("appointments", "delete"), appointmentController.deleteAppointment);
+
+// Get single appointment by ID — patient-self or staff/admin. Registered
+// BEFORE the phone-lookup route below: since both are single-segment GET
+// params at the same path depth, whichever is registered first wins for
+// every request. Falls through to the phone route (`next("route")`) when the
+// param isn't a valid Mongo ObjectId, so real phone-number lookups are
+// unaffected. Previously `getAppointmentById` existed in the controller but
+// was NEVER wired to any route -- every GET /appointments/<id> silently fell
+// through to getAppointmentsByPhone, which did `Patient.findOne({ phone: id
+// })`, found nothing, and returned "Patient not found" -- the exact bug
+// reported on the Treatment #/Linked OPD Visit and Appointment # click
+// handlers (Patient Detail modal's Treatments/Appointments tabs).
+router.get(
+  "/:id",
+  anyAuth,
+  (req, res, next) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next("route");
+    }
+    return next();
+  },
+  appointmentSelfOrAdmin,
+  appointmentController.getAppointmentById
+);
 
 // Get a patient's appointments by phone — patient-self or staff/admin
 router.get("/:phone", anyAuth, phoneSelfOrAdmin, appointmentController.getAppointmentsByPhone);

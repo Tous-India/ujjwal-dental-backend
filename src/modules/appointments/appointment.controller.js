@@ -2291,3 +2291,150 @@ export const reopenTreatment = asyncHandler(async (req, res) => {
   const updated = await Appointment.findById(id).populate("patient", "name phone");
   return ApiResponse.success(res, { appointment: updated }, "Treatment reopened");
 });
+
+/**
+ * @desc    Edit a treatment plan's name, line items, and discount -- available
+ *          throughout the active lifecycle (any number of sessions already
+ *          booked/delivered), locked only once treatmentStatus is set (the
+ *          treatment is closed). Real-world treatment plans change mid-
+ *          procedure (dentist adds/removes a procedure after starting), so
+ *          this is NOT restricted to "no sessions yet".
+ *
+ *          Recomputes grandTotal explicitly in plain JS here (mirrors the
+ *          exact client-side formula used by AddAppointmentModal's
+ *          treatmentTotal: subtotal = sum(unitPrice), discountAmount =
+ *          round(subtotal * discountPercent / 100), total = max(0, subtotal
+ *          - discountAmount)) and writes via Invoice.updateOne/$set -- NEVER
+ *          a fetch-modify-.save() pattern -- same corruption-avoidance
+ *          pattern as billing.controller.js's correctInvoice. amountPaid is
+ *          never touched by this edit; only grandTotal/balanceDue recompute.
+ *
+ *          Edge case: if the new grandTotal ends up lower than amountPaid
+ *          already collected (e.g. admin removed a procedure after payment),
+ *          the save still succeeds -- not blocked, not crashed -- but the
+ *          response carries a `warning` field so the frontend can surface it
+ *          for admin review. Reconciliation (refund etc.) is a separate,
+ *          later, explicit admin action.
+ * @route   PATCH /api/appointments/:id/treatment-items
+ * @access  Admin / Clinic Manager
+ */
+export const updateTreatmentItems = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { treatmentName, items, discountPercent, reason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid appointment ID", 400);
+  }
+
+  const appointment = await Appointment.findById(id);
+  if (!appointment) {
+    return ApiResponse.error(res, "Appointment not found", 404);
+  }
+  if (appointment.visitType !== "treatment") {
+    return ApiResponse.error(
+      res,
+      "Only the parent treatment appointment's items can be edited, not individual sessions",
+      400
+    );
+  }
+  // Same rule as the frontend gate -- enforced authoritatively here too.
+  if (appointment.treatmentStatus) {
+    return ApiResponse.error(
+      res,
+      "This treatment plan is already closed and can no longer be edited",
+      400
+    );
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return ApiResponse.error(res, "At least one line item is required", 400);
+  }
+
+  const ALLOWED_TREATMENT_ITEM_TYPES = ["treatment", "surgery", "test", "medicine", "other"];
+  const cleanItems = [];
+  for (const item of items) {
+    const description = (item.description || "").trim();
+    const unitPrice = Number(item.unitPrice) || 0;
+    if (!description || unitPrice <= 0) {
+      return ApiResponse.error(res, "Each item needs a description and a fee greater than ₹0", 400);
+    }
+    cleanItems.push({
+      itemType: ALLOWED_TREATMENT_ITEM_TYPES.includes(item.itemType) ? item.itemType : "treatment",
+      description,
+      unitPrice,
+      quantity: 1,
+      amount: unitPrice,
+      taxAmount: 0,
+      total: unitPrice,
+    });
+  }
+
+  // Mirrors AddAppointmentModal's client-side treatmentTotal formula exactly.
+  const subtotal = cleanItems.reduce((sum, i) => sum + i.unitPrice, 0);
+  const discPct = Number(discountPercent) || 0;
+  const discountAmount = Math.round((subtotal * discPct) / 100);
+  const grandTotal = Math.max(0, subtotal - discountAmount);
+
+  if (!appointment.invoice) {
+    return ApiResponse.error(res, "This treatment has no linked invoice to update", 400);
+  }
+  const invoice = await Invoice.findById(appointment.invoice).lean();
+  if (!invoice) {
+    return ApiResponse.error(res, "Linked invoice not found", 404);
+  }
+
+  // amountPaid is NEVER altered by this edit -- only grandTotal/balanceDue recompute.
+  const amountPaid = invoice.amountPaid || 0;
+  const balanceDue = Math.max(0, grandTotal - amountPaid);
+  let paymentStatus = "unpaid";
+  if (amountPaid >= grandTotal && grandTotal > 0) paymentStatus = "paid";
+  else if (amountPaid > 0) paymentStatus = "partial";
+
+  await Invoice.updateOne(
+    { _id: invoice._id },
+    {
+      $set: {
+        items: cleanItems,
+        subtotal,
+        totalTax: 0,
+        discount: { percentage: discPct, amount: 0 },
+        grandTotal,
+        balanceDue,
+        paymentStatus,
+        lastEditedAt: new Date(),
+        lastEditedBy: req.user?._id || null,
+      },
+      $push: {
+        editHistory: {
+          editedAt: new Date(),
+          editedBy: req.user?._id || null,
+          reason: (reason || "Treatment items edited").trim(),
+          changes: {
+            items: { from: invoice.items, to: cleanItems },
+            discount: { from: invoice.discount, to: { percentage: discPct, amount: 0 } },
+            grandTotal: { from: invoice.grandTotal, to: grandTotal },
+          },
+        },
+      },
+    }
+  );
+
+  const appointmentSet = { fee: grandTotal, opdFee: grandTotal };
+  if (treatmentName !== undefined && treatmentName !== null) {
+    appointmentSet.treatmentName = String(treatmentName).trim();
+  }
+  await Appointment.updateOne({ _id: appointment._id }, { $set: appointmentSet });
+
+  const updatedAppointment = await Appointment.findById(appointment._id)
+    .populate("patient", "name phone email hasMembership currentDiscount")
+    .populate("clinic", "name code")
+    .populate("invoice", "invoiceNumber items subtotal discount totalTax grandTotal amountPaid balanceDue paymentStatus")
+    .populate("originatingOpdAppointment", "appointmentNumber")
+    .lean();
+
+  const responseData = { appointment: updatedAppointment };
+  if (grandTotal < amountPaid) {
+    responseData.warning = "New total is less than the amount already collected -- please review.";
+  }
+
+  return ApiResponse.success(res, responseData, "Treatment items updated successfully");
+});
