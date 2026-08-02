@@ -28,6 +28,9 @@ router.get("/stats", authProtect, billingController.getBillingStats);
 // Get overdue invoices - Admin
 router.get("/overdue", authProtect, billingController.getOverdueInvoices);
 
+// Export the currently-filtered invoice list as a PDF statement - Admin
+router.get("/export", authProtect, billingController.exportInvoices);
+
 // Get invoice by invoice number
 router.get("/invoices/number/:invoiceNumber", authProtect, billingController.getInvoiceByNumber);
 

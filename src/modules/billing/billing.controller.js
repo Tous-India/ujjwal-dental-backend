@@ -18,21 +18,16 @@ import { fireWhatsApp } from "../../utils/whatsapp.js";
  */
 
 /**
- * @desc    Get all invoices
- * @route   GET /api/billing/invoices?patient=&status=&from=&to=
- * @access  Admin
+ * Build the Mongo filter used by both the paginated invoice list and the
+ * PDF export, so the two can never drift out of sync -- same principle as
+ * patient.controller.js's buildPatientQuery().
  */
-export const getAllInvoices = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType, voided, search } = req.query;
-
-  // Build query
+async function buildInvoiceQuery({ patient, status, paymentStatus, clinic, from, to, itemType, voided, search }) {
   const query = {};
 
   // Search by invoice number OR patient name/phone -- resolves matching
   // Patient _ids first, then filters invoices by those ids (mirrors the
   // getAllPayments fix and the enquiry.controller.js search pattern).
-  // Previously `search` was destructured from req.query but never applied
-  // to the query at all -- silently a no-op, same bug class as Payment History.
   if (search && search.trim()) {
     const searchRegex = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     const matchingPatients = await Patient.find({
@@ -86,6 +81,19 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
     query.invoiceDate = parseIstDateRange(from, to);
   }
 
+  return query;
+}
+
+/**
+ * @desc    Get all invoices
+ * @route   GET /api/billing/invoices?patient=&status=&from=&to=
+ * @access  Admin
+ */
+export const getAllInvoices = asyncHandler(async (req, res) => {
+  const { page = 1, limit = 10, patient, status, paymentStatus, clinic, from, to, itemType, voided, search } = req.query;
+
+  const query = await buildInvoiceQuery({ patient, status, paymentStatus, clinic, from, to, itemType, voided, search });
+
   // Pagination
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -124,6 +132,149 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
     totalPages: Math.ceil(total / parseInt(limit)),
   });
 });
+
+/**
+ * @desc    Export the currently-filtered invoice list as a PDF statement.
+ *          Respects the SAME filters as the invoice list (search/status/
+ *          paymentStatus/voided/clinic/from/to/itemType) via the shared
+ *          buildInvoiceQuery(), so the export can never drift from what's
+ *          on-screen. Headline totals (Total Amount/Paid/Balance Due) are
+ *          computed over this SAME filtered invoice set using the exact
+ *          per-invoice-clamped Balance Due method proven correct in
+ *          getBillingStats (never totalAmount - totalPaid at the aggregate
+ *          level -- see that function's comment for why).
+ * @route   GET /api/billing/export?format=pdf
+ * @access  Admin
+ */
+export const exportInvoices = asyncHandler(async (req, res) => {
+  const { patient, status, paymentStatus, clinic, from, to, itemType, voided, search } = req.query;
+
+  const query = await buildInvoiceQuery({ patient, status, paymentStatus, clinic, from, to, itemType, voided, search });
+
+  const invoices = await Invoice.find(query)
+    .populate("patient", "name phone")
+    .sort({ invoiceDate: -1, createdAt: -1 })
+    .lean();
+
+  const realPaidByInvoice = await getRealPaidByInvoiceMap(invoices.map((i) => i._id));
+  const rows = invoices.map((inv) => {
+    const realPaid = realPaidByInvoice.get(String(inv._id)) || 0;
+    const grandTotal = inv.grandTotal || 0;
+    const due = Math.max(0, grandTotal - realPaid);
+    const paymentStatusLive = realPaid >= grandTotal && grandTotal > 0 ? "paid" : realPaid > 0 ? "partial" : "unpaid";
+    return {
+      invoiceNumber: inv.invoiceNumber || "-",
+      date: inv.invoiceDate || inv.createdAt,
+      patientName: inv.patient?.name || "Unknown",
+      treatment: inv.items?.[0]?.description || "-",
+      grandTotal,
+      paid: realPaid,
+      due,
+      status: paymentStatusLive,
+    };
+  });
+
+  const totals = rows.reduce(
+    (acc, r) => ({
+      totalAmount: acc.totalAmount + r.grandTotal,
+      totalPaid: acc.totalPaid + r.paid,
+      totalDue: acc.totalDue + r.due,
+    }),
+    { totalAmount: 0, totalPaid: 0, totalDue: 0 }
+  );
+
+  const filterLabel = (() => {
+    if (from && to) return `${new Date(from).toLocaleDateString("en-IN")} to ${new Date(to).toLocaleDateString("en-IN")}`;
+    if (from) return `From ${new Date(from).toLocaleDateString("en-IN")}`;
+    if (to) return `Until ${new Date(to).toLocaleDateString("en-IN")}`;
+    return "All Time";
+  })();
+
+  sendBillingStatementPdf(res, rows, totals, filterLabel);
+});
+
+const fmtCurrency = (n) => `Rs ${(n || 0).toLocaleString("en-IN")}`;
+
+/**
+ * Generates the Billing Statement PDF -- same pdfkit pattern as
+ * patient.controller.js's sendPatientsPdf (tabular, paginated) and
+ * downloadInvoicePdf in this file, for visual consistency across exports.
+ */
+function sendBillingStatementPdf(res, rows, totals, filterLabel) {
+  const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+  const filename = `billing-statement-${Date.now()}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  doc.pipe(res);
+
+  const leftMargin = 50;
+  const pageWidth = doc.page.width - 100;
+  const bottomLimit = doc.page.height - 50;
+
+  doc.fontSize(16).font("Helvetica-Bold").text(`Billing Statement -- ${filterLabel}`, leftMargin, 50, { align: "center" });
+  doc.fontSize(9).font("Helvetica").fillColor("#555555");
+  doc.text(`Generated: ${new Date().toLocaleString("en-IN")}  |  Invoices: ${rows.length}`, { align: "center" });
+  doc.fillColor("black");
+  doc.moveDown(1);
+
+  // Headline totals, matching the same per-invoice-clamped computation
+  // getBillingStats uses -- see exportInvoices' comment for why.
+  doc.fontSize(10).font("Helvetica-Bold");
+  const totalsY = doc.y;
+  const colW = pageWidth / 3;
+  doc.text(`Total Amount: ${fmtCurrency(totals.totalAmount)}`, leftMargin, totalsY, { width: colW, align: "center" });
+  doc.text(`Total Paid: ${fmtCurrency(totals.totalPaid)}`, leftMargin + colW, totalsY, { width: colW, align: "center" });
+  doc.text(`Balance Due: ${fmtCurrency(totals.totalDue)}`, leftMargin + colW * 2, totalsY, { width: colW, align: "center" });
+  doc.moveDown(1.2);
+
+  const colWidths = { invoiceNumber: 75, date: 60, patient: 90, treatment: 100, total: 55, paid: 55, due: 55 };
+
+  const drawHeaderRow = () => {
+    const y = doc.y;
+    let x = leftMargin;
+    doc.font("Helvetica-Bold").fontSize(8.5);
+    doc.text("Invoice No", x, y, { width: colWidths.invoiceNumber }); x += colWidths.invoiceNumber;
+    doc.text("Date", x, y, { width: colWidths.date }); x += colWidths.date;
+    doc.text("Patient", x, y, { width: colWidths.patient }); x += colWidths.patient;
+    doc.text("Treatment", x, y, { width: colWidths.treatment }); x += colWidths.treatment;
+    doc.text("Total", x, y, { width: colWidths.total }); x += colWidths.total;
+    doc.text("Paid", x, y, { width: colWidths.paid }); x += colWidths.paid;
+    doc.text("Due", x, y, { width: colWidths.due }); x += colWidths.due;
+    doc.text("Status", x, y);
+    doc.moveDown(0.4);
+    doc.moveTo(leftMargin, doc.y).lineTo(leftMargin + pageWidth, doc.y).stroke("#cccccc");
+    doc.moveDown(0.3);
+  };
+
+  drawHeaderRow();
+  doc.font("Helvetica").fontSize(8);
+
+  for (const r of rows) {
+    if (doc.y > bottomLimit) {
+      doc.addPage();
+      doc.y = 50;
+      drawHeaderRow();
+      doc.font("Helvetica").fontSize(8);
+    }
+
+    const rowY = doc.y;
+    let x = leftMargin;
+    doc.text(r.invoiceNumber, x, rowY, { width: colWidths.invoiceNumber }); x += colWidths.invoiceNumber;
+    doc.text(r.date ? new Date(r.date).toLocaleDateString("en-IN") : "-", x, rowY, { width: colWidths.date }); x += colWidths.date;
+    doc.text(r.patientName, x, rowY, { width: colWidths.patient }); x += colWidths.patient;
+    doc.text(r.treatment, x, rowY, { width: colWidths.treatment }); x += colWidths.treatment;
+    doc.text(fmtCurrency(r.grandTotal), x, rowY, { width: colWidths.total }); x += colWidths.total;
+    doc.text(fmtCurrency(r.paid), x, rowY, { width: colWidths.paid }); x += colWidths.paid;
+    doc.text(fmtCurrency(r.due), x, rowY, { width: colWidths.due }); x += colWidths.due;
+    doc.text(r.status, x, rowY);
+
+    doc.moveDown(0.6);
+  }
+
+  doc.end();
+}
 
 /**
  * @desc    Get invoice by ID
