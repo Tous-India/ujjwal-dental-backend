@@ -741,7 +741,7 @@ export const recordPayment = asyncHandler(async (req, res) => {
     amount,
     description: `Invoice ${updatedInvoice?.invoiceNumber || ""}`.trim(),
     invoiceNumber: updatedInvoice?.invoiceNumber,
-  });
+  }, updatedInvoice?.patient?.name);
 
   ApiResponse.success(res, { invoice: updatedInvoice }, "Payment recorded successfully");
 });
