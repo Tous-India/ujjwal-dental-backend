@@ -18,17 +18,17 @@ const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED === "true";
 const TOUS_CONNECT_API_KEY = process.env.TOUS_CONNECT_API_KEY;
 const TOUS_CONNECT_URL = "https://connect.thetous.com/api/v1/messages/send";
 
-// Shown in the account_created template -- not tied to any specific call
-// site's data, same across the whole clinic.
-const CLINIC_CONTACT_PHONE = process.env.CLINIC_CONTACT_PHONE || "the clinic";
-
 // Draft copy only -- kept for reference / any future non-template rendering.
 // Not used to build the real request below (that's driven by
 // TEMPLATE_NAME_MAP + buildBodyParams instead, per Tous Connect's
 // template_components shape).
 export const WHATSAPP_TEMPLATES = {
+  // v2 (approved shape): plaintext password removed entirely -- Meta
+  // rejected the original 2-variable version over WhatsApp policy against
+  // sending credentials via template messages. Clinic phone is now fixed
+  // body text in the template itself, not a variable.
   account_created:
-    "Welcome to Ujjwal Dental Clinic! Your patient portal is ready. Login: https://ujjwaldentalplanet.com/login | Username: {phone} | Password: {password}",
+    'Welcome to Ujjwal Dental Clinic! Your patient portal account is ready.\n\nLogin: ujjwaldentalplanet.com/login\nUsername: {phone}\n\nAsk our staff for your password, or use "Forgot Password" on the login page.\n\nFor any help, call us at +91-9467776028.',
   membership_purchased:
     "Your {planName} membership is now active! Valid until {validUntil}. Thank you for choosing Ujjwal Dental Clinic.",
   payment_recorded:
@@ -44,6 +44,11 @@ export const WHATSAPP_TEMPLATES = {
  * this map is the one place to update, not a deep refactor.
  */
 export const TEMPLATE_NAME_MAP = {
+  // Resubmitted after Meta rejected the original 2-variable version (see
+  // buildBodyParams below). If Tous Connect required registering this as a
+  // NEW template name on resubmit (e.g. "account_created_v2") rather than
+  // reusing "account_created", update this one line to match whatever name
+  // actually shows as approved in the Tous Connect dashboard.
   account_created: "account_created",
   membership_purchased: "membership_purchased",
   payment_recorded: "payment_recorded",
@@ -70,11 +75,12 @@ const textParam = (value) => ({
 const buildBodyParams = (templateType, phone, data) => {
   switch (templateType) {
     case "account_created":
-      return [
-        textParam(phone),
-        textParam(data.password || "your default password -- contact us if you don't have it"),
-        textParam(CLINIC_CONTACT_PHONE),
-      ];
+      // v2 (approved shape): ONE variable only -- {{1}} = phone/username.
+      // The password is deliberately never sent via WhatsApp (Meta rejected
+      // the original 2-variable version over exactly this -- sending
+      // credentials in a template message). Any `data.password` passed by a
+      // call site is intentionally ignored here.
+      return [textParam(phone)];
     case "membership_purchased":
       return [textParam(data.planName), textParam(data.validUntil)];
     case "payment_recorded":
