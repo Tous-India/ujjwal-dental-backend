@@ -1,7 +1,8 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { notify } from "../../utils/notifyHelper.js";
-import { fireWhatsApp } from "../../utils/whatsapp.js";
+import { fireWhatsApp, sendWhatsApp } from "../../utils/whatsapp.js";
+import { generateRazorpayPaymentLink } from "../../utils/razorpayLinks.js";
 import Payment from "./payment.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Appointment from "../appointments/appointment.model.js";
@@ -1114,12 +1115,21 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
         break;
       }
 
-      // Look up by reference_id (= invoice._id, set at link creation time)
-      // first; fall back to a stored paymentLink.id match in case
-      // reference_id is ever missing/stale.
+      // Look up by reference_id (= invoice._id, set at link creation time --
+      // OR `${invoiceId}:${appointmentId}` for a post-hoc/per-session
+      // collection generated with a referenceAppointmentId, see
+      // razorpayLinks.js) first; fall back to a stored paymentLink.id match
+      // in case reference_id is ever missing/stale.
       let invoice = null;
-      if (linkEntity.reference_id && mongoose.Types.ObjectId.isValid(linkEntity.reference_id)) {
-        invoice = await Invoice.findById(linkEntity.reference_id);
+      let sessionAppointmentId = null;
+      if (linkEntity.reference_id) {
+        const [refInvoiceId, refAppointmentId] = String(linkEntity.reference_id).split(":");
+        if (refInvoiceId && mongoose.Types.ObjectId.isValid(refInvoiceId)) {
+          invoice = await Invoice.findById(refInvoiceId);
+        }
+        if (refAppointmentId && mongoose.Types.ObjectId.isValid(refAppointmentId)) {
+          sessionAppointmentId = refAppointmentId;
+        }
       }
       if (!invoice && linkEntity.id) {
         invoice = await Invoice.findOne({ "paymentLink.id": linkEntity.id });
@@ -1155,7 +1165,12 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
       const payment = await Payment.createSafe({
         patient: invoice.patient,
         clinic: invoice.clinic,
-        appointment: invoice.appointment,
+        // A per-session collection (see referenceAppointmentId above) links the
+        // Payment to that SPECIFIC session appointment, not the parent
+        // invoice.appointment -- otherwise TreatmentPlanDetailModal's
+        // per-session "collected" total would double-count into the wrong
+        // session (or the parent), exactly the "not cumulative" requirement.
+        appointment: sessionAppointmentId || invoice.appointment,
         amount: applyAmount,
         paymentMode: "razorpay",
         type: invoice.items?.[0]?.itemType === "opd_fee" ? "opd_fee" : "treatment",
@@ -1906,10 +1921,10 @@ export const collectPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Amount must be greater than 0", 400);
   }
 
-  const validModes = ["cash", "card", "upi"];
+  const validModes = ["cash", "card", "upi", "razorpay"];
   const normalizedMode = (mode || "").toLowerCase();
   if (!validModes.includes(normalizedMode)) {
-    return ApiResponse.error(res, "Mode must be cash, card, or upi", 400);
+    return ApiResponse.error(res, "Mode must be cash, card, upi, or razorpay", 400);
   }
 
   const invoice = await Invoice.findById(invoiceId);
@@ -1933,6 +1948,62 @@ export const collectPayment = asyncHandler(async (req, res) => {
       `Amount ₹${numAmount} exceeds balance due ₹${balanceDue.toFixed(2)}`,
       400
     );
+  }
+
+  // ── Razorpay: generate a shareable Payment Link for EXACTLY this amount
+  // (never the full invoice grandTotal -- this may be a partial/post-hoc
+  // collection against an invoice that already has amountPaid > 0). Nothing
+  // is marked paid here: the actual collection happens later when the
+  // patient pays the link, processed by the payment_link.paid webhook --
+  // mirrors the booking-time razorpay flow in appointment.controller.js.
+  if (normalizedMode === "razorpay") {
+    const patientDoc = await Patient.findById(invoice.patient).select("name phone");
+    if (!patientDoc) {
+      return ApiResponse.error(res, "Patient not found for this invoice", 404);
+    }
+
+    try {
+      const { shortUrl, paymentLinkId } = await generateRazorpayPaymentLink(invoice, patientDoc, {
+        amount: numAmount,
+        referenceAppointmentId: resolvedAppointmentId || undefined,
+      });
+      invoice.paymentLink = {
+        id: paymentLinkId,
+        shortUrl,
+        status: "created",
+        createdAt: new Date(),
+        paidAt: null,
+      };
+      await invoice.save();
+
+      // Awaited (same reasoning as createAppointment's razorpay branch) --
+      // the admin UI needs the REAL send outcome, not an assumed one.
+      const waResult = await sendWhatsApp(
+        patientDoc.phone,
+        "payment_link",
+        { amount: numAmount, description: notes || `Invoice ${invoice.invoiceNumber}`, shortUrl },
+        patientDoc.name
+      );
+
+      return ApiResponse.success(
+        res,
+        {
+          paymentLink: { shortUrl, paymentLinkId, whatsappSent: !!waResult?.success },
+          updatedInvoice: invoice,
+        },
+        "Payment link generated successfully"
+      );
+    } catch (linkErr) {
+      console.error("[collectPayment] Razorpay payment link generation failed:", linkErr.message);
+      return ApiResponse.success(
+        res,
+        {
+          paymentLink: { error: linkErr.message },
+          updatedInvoice: invoice,
+        },
+        "Payment link generation failed"
+      );
+    }
   }
 
   const previousAmountPaid = invoice.amountPaid || 0;

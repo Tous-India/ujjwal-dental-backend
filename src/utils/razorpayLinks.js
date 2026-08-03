@@ -17,16 +17,31 @@ const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links";
 /**
  * @param {Object} invoice  A saved Invoice document (needs _id, grandTotal, items)
  * @param {Object} patient  A saved Patient document (needs name, phone)
+ * @param {Object} [options]
+ * @param {number} [options.amount]  Override amount to charge (₹), instead of
+ *   invoice.grandTotal. Needed by post-hoc/partial collection call sites
+ *   (CollectPaymentModal, per-session collect) where the invoice may already
+ *   be partially paid -- the link must be for the SPECIFIC amount being
+ *   collected right now, never the full (possibly-already-partly-paid) total.
+ * @param {string} [options.referenceAppointmentId]  When collecting against a
+ *   specific appointment/session (not just the invoice as a whole), this is
+ *   appended to reference_id as `${invoiceId}:${appointmentId}` so the
+ *   payment_link.paid webhook can link the resulting Payment to that exact
+ *   session -- keeping per-session collected amounts correct (non-cumulative).
+ *   Omit for the plain invoice-level case (existing behaviour, unchanged).
  * @returns {Promise<{shortUrl: string, paymentLinkId: string}>}
  */
-export async function generateRazorpayPaymentLink(invoice, patient) {
+export async function generateRazorpayPaymentLink(invoice, patient, options = {}) {
+  const { amount: amountOverride, referenceAppointmentId } = options;
+
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!keyId || !keySecret) {
     throw new Error("Razorpay is not configured");
   }
 
-  const amountPaise = Math.round(Number(invoice?.grandTotal) * 100);
+  const chargeAmount = amountOverride != null ? Number(amountOverride) : Number(invoice?.grandTotal);
+  const amountPaise = Math.round(chargeAmount * 100);
   if (!amountPaise || amountPaise <= 0) {
     throw new Error("Invoice amount must be greater than ₹0 to generate a payment link");
   }
@@ -54,7 +69,9 @@ export async function generateRazorpayPaymentLink(invoice, patient) {
     // We handle notification ourselves via fireWhatsApp -- never let Razorpay
     // send its own SMS/email for this link.
     notify: { sms: false, email: false },
-    reference_id: String(invoice._id),
+    reference_id: referenceAppointmentId
+      ? `${invoice._id}:${referenceAppointmentId}`
+      : String(invoice._id),
     callback_url: `${frontendUrl}/payment-callback`,
     callback_method: "get",
   };
