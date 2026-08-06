@@ -204,6 +204,42 @@ const STALE_TREATMENT_DAYS = 90;
  * @route   GET /api/appointments/stale-treatments
  * @access  Admin
  */
+/**
+ * @desc    Appointments that SHOULD have an invoice but don't -- billing gap alert
+ * @route   GET /api/appointments/unbilled
+ * @access  Staff/Admin
+ *
+ * Why this exists: a real patient (Swati, UD-2608-1201) was left with a
+ * completed, chargeable appointment and NO invoice, because auto-invoice
+ * generation threw and the error was swallowed. Nobody noticed until she could
+ * not be billed. An invoice-less chargeable appointment is invisible to
+ * Billing by construction -- there is no invoice for Billing to list -- so the
+ * gap can only be found by looking at APPOINTMENTS, which is what this does.
+ *
+ * Computed live on read (same rationale as getStaleTreatments above: no stored
+ * flag, no cron -- this app's only scheduler is setInterval-based and never
+ * runs on Vercel serverless, so a cron-driven flag would silently never fire).
+ */
+export const getUnbilledAppointments = asyncHandler(async (req, res) => {
+  const unbilled = await Appointment.find({
+    invoice: { $in: [null, undefined] },
+    isFree: { $ne: true },
+    status: { $ne: "cancelled" },
+    $or: [{ fee: { $gt: 0 } }, { opdFee: { $gt: 0 } }],
+  })
+    .populate("patient", "name phone")
+    .populate("clinic", "name code")
+    .select("appointmentNumber patient clinic visitType fee opdFee status paymentStatus invoiceError date createdAt")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  ApiResponse.success(
+    res,
+    { unbilledAppointments: unbilled, count: unbilled.length },
+    "Unbilled appointments fetched"
+  );
+});
+
 export const getStaleTreatments = asyncHandler(async (req, res) => {
   const cutoff = new Date(Date.now() - STALE_TREATMENT_DAYS * 24 * 60 * 60 * 1000);
 
@@ -987,6 +1023,9 @@ export const createAppointment = asyncHandler(async (req, res) => {
   ======================== */
 
   let invoiceId = null;
+  // Set when auto-invoice generation throws -- surfaced in the response so the
+  // admin UI can warn instead of showing an unqualified success.
+  let invoiceFailure = null;
   // Populated only when incomingPaymentMethod === "razorpay" -- returned in the
   // response AND stored on the appointment/invoice regardless of the WhatsApp
   // send outcome, so the admin UI can always show the link for manual copy.
@@ -1110,8 +1149,21 @@ export const createAppointment = asyncHandler(async (req, res) => {
         }
       }
     } catch (err) {
-      // Don't fail the booking if invoice generation hiccups; log for follow-up.
+      // Don't fail the booking if invoice generation hiccups -- but NEVER let
+      // the failure vanish. Previously this was a bare console.error and the
+      // endpoint still returned 201 "Appointment created successfully", so an
+      // invoice-less (and therefore unbillable) appointment looked like a clean
+      // success. That silently cost a real patient their invoice.
       console.error("Auto-invoice for appointment failed:", err.message);
+      invoiceFailure = { message: err.message, failedAt: new Date() };
+      try {
+        await Appointment.updateOne(
+          { _id: appointment._id },
+          { $set: { invoiceError: invoiceFailure } }
+        );
+      } catch (persistErr) {
+        console.error("[createAppointment] Could not persist invoiceError:", persistErr?.message);
+      }
     }
   }
 
@@ -1135,6 +1187,14 @@ export const createAppointment = asyncHandler(async (req, res) => {
       isFree: appointment.isFree,
       opdFeePaid: appointment.opdFeePaid,
       invoiceId,
+      // Set ONLY when auto-invoice generation failed. The booking still
+      // succeeded (deliberately -- never lose the appointment), but the caller
+      // must warn the admin: without an invoice this appointment cannot be
+      // billed or collected against.
+      invoiceError: invoiceFailure,
+      warning: invoiceFailure
+        ? "Appointment booked, but invoice generation failed — this appointment cannot be billed until an invoice is created. Please contact support."
+        : undefined,
       // Only set when incomingPaymentMethod === "razorpay". `shortUrl` is
       // always present here regardless of whatsappSent (Part 4's manual-copy
       // fallback requirement) -- `error` is set instead if link generation

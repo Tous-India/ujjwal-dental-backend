@@ -487,6 +487,37 @@ invoiceSchema.statics.findAvailableInvoiceNumber = async function (year, month) 
  * @param {Object} matchQuery - Mongo match stage (e.g. patient/clinic/date/status)
  * @returns {Promise<Object>} { totalInvoices, totalAmount, totalPaid, totalDue, paidCount, partialCount, unpaidCount }
  */
+/**
+ * Create an Invoice, retrying on a duplicate invoiceNumber (E11000).
+ *
+ * findAvailableInvoiceNumber() verifies a candidate is free before returning
+ * it, but that check and the insert are not atomic: two concurrent creates can
+ * both observe the same slot as free and race, and the loser's E11000 would
+ * otherwise propagate as a hard failure. A real patient (Swati, UD-2608-1201)
+ * ended up with a completed appointment and NO invoice because a
+ * generateInvoice() throw was swallowed upstream -- belt-and-suspenders here
+ * plus the persisted invoiceError upstream ensures that can't silently recur.
+ *
+ * Mirrors the proven Report.createSafe / Payment.createSafe pattern. Use this
+ * instead of Invoice.create() at every invoice-generating call site.
+ */
+invoiceSchema.statics.createSafe = async function (data, maxAttempts = 5) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await this.create(data);
+    } catch (err) {
+      if (err.code === 11000 && err.keyPattern?.invoiceNumber) {
+        console.warn(`[Invoice] Duplicate invoiceNumber, retrying... (attempt ${attempt}/${maxAttempts})`);
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+};
+
 invoiceSchema.statics.getStats = async function (matchQuery = {}) {
   const stats = await this.aggregate([
     { $match: matchQuery },

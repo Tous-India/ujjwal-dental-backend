@@ -90,7 +90,8 @@ export const generateInvoice = async ({
 
   const initialPaid = Math.max(0, Number(amountPaid) || 0);
 
-  const invoice = await Invoice.create({
+  // createSafe (not create) -- retries on a duplicate invoiceNumber race.
+  const invoice = await Invoice.createSafe({
     patient: patientDoc._id,
     ...(clinic ? { clinic } : {}),
     ...(appointment ? { appointment } : {}),

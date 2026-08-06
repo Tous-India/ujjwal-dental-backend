@@ -279,6 +279,18 @@ const appointmentSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Auto-invoice failure record. Booking deliberately still succeeds when
+    // invoice generation throws (never lose the appointment), but the failure
+    // MUST NOT vanish: a real patient (Swati, UD-2608-1201) ended up
+    // completed-and-unbillable because the error was swallowed to a
+    // console.error and the API still returned 201 "success". Persisted here so
+    // the booking response, the admin UI toast, and the Dashboard alert can all
+    // surface it. Cleared if an invoice is later attached.
+    invoiceError: {
+      message: { type: String, default: null },
+      failedAt: { type: Date, default: null },
+    },
+
     // Payment status (kept in sync with the linked invoice via PATCH handler).
     paymentStatus: {
       type: String,

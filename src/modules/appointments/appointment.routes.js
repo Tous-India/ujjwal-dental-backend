@@ -57,6 +57,9 @@ router.get("/upcoming", authProtect, appointmentController.getUpcomingAppointmen
 // Get stale (stalled) treatments — dashboard flag list — staff/admin
 router.get("/stale-treatments", authProtect, appointmentController.getStaleTreatments);
 
+// Chargeable appointments with NO invoice — billing-gap alert (see controller)
+router.get("/unbilled", authProtect, appointmentController.getUnbilledAppointments);
+
 // Get available slots (for booking) — public; optionalAuth lets admin/clinic_manager
 // see slots for backdated dates (same allowance as createAppointment)
 router.get("/available-slots", optionalAuth, appointmentController.getAvailableSlots);
