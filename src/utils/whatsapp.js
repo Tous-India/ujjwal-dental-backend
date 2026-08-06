@@ -59,7 +59,11 @@ export const TEMPLATE_NAME_MAP = {
   // NEW template name on resubmit (e.g. "account_created_v2") rather than
   // reusing "account_created", update this one line to match whatever name
   // actually shows as approved in the Tous Connect dashboard.
-  account_created: "account_created",
+  // OTP-era rewrite: zero variables. The password was already removed in v2
+  // (Meta rejects credentials in templates); the username/phone variable is
+  // gone too now that patients log in with a WhatsApp OTP rather than a
+  // shared password, so the template is entirely static text.
+  account_created: "account_created_v1",
   membership_purchased: "membership_purchased",
   payment_recorded: "payment_recorded",
   appointment_reminder_24h: "appointment_reminder_24h",
@@ -99,12 +103,15 @@ const textParam = (value) => ({
 const buildBodyParams = (templateType, phone, data) => {
   switch (templateType) {
     case "account_created":
-      // v2 (approved shape): ONE variable only -- {{1}} = phone/username.
-      // The password is deliberately never sent via WhatsApp (Meta rejected
-      // the original 2-variable version over exactly this -- sending
-      // credentials in a template message). Any `data.password` passed by a
-      // call site is intentionally ignored here.
-      return [textParam(phone)];
+      // account_created_v1 (OTP era): ZERO variables -- entirely static text
+      // pointing the patient at the login page and explaining the OTP flow.
+      // The password was already dropped in v2 (Meta rejects credentials in
+      // template messages), and the username/phone variable is gone now that
+      // login is by WhatsApp OTP. Returning [] means buildComponents omits the
+      // body block entirely -- sending parameters for a zero-variable template
+      // would itself get the send rejected. Any `data.password` / phone passed
+      // by a call site is intentionally ignored.
+      return [];
     case "membership_purchased":
       return [textParam(data.planName), textParam(data.validUntil)];
     case "payment_recorded":
@@ -154,7 +161,15 @@ const buildBodyParams = (templateType, phone, data) => {
 };
 
 const buildComponents = (templateType, phone, data) => {
-  const components = [{ type: "body", parameters: buildBodyParams(templateType, phone, data) }];
+  const bodyParams = buildBodyParams(templateType, phone, data);
+
+  // A zero-variable template (account_created_v1) must NOT carry a body
+  // component: sending parameters for a template that declares none is itself
+  // grounds for rejection. contact_name is unaffected -- it's a top-level
+  // field on the request, not a body variable, so it is still always sent.
+  const components = bodyParams.length
+    ? [{ type: "body", parameters: bodyParams }]
+    : [];
 
   // Media-template case: report_shared attaches the real report file as a
   // document header, per Tous Connect's docs.
