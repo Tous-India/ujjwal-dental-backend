@@ -279,9 +279,15 @@ const storage = multer.memoryStorage();
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     "image/jpeg",
+    "image/jpg",
     "image/png",
     "image/gif",
     "image/webp",
+    // iPhones default to HEIC/HEIF -- without these, every photo straight off
+    // an iPhone is rejected as an "invalid file type". Cloudinary transcodes
+    // both on ingest, so downstream delivery/thumbnails are unaffected.
+    "image/heic",
+    "image/heif",
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
