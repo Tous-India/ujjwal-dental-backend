@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as membershipController from "./membership.controller.js";
 import { authProtect, patientProtect, optionalAuth, restrictTo } from "../../middlewares/auth.middleware.js";
@@ -34,16 +35,16 @@ router.get("/plans/subscriber-counts", authProtect, membershipController.getPlan
 router.get("/plans/:id", membershipController.getPlanById);
 
 // Create new plan (Admin)
-router.post("/plans", authProtect, membershipController.createPlan);
+router.post("/plans", authProtect, checkPermission("memberships", "create"), membershipController.createPlan);
 
 // Update plan (Admin)
-router.patch("/plans/:id", authProtect, membershipController.updatePlan);
+router.patch("/plans/:id", authProtect, checkPermission("memberships", "edit"), membershipController.updatePlan);
 
 // Delete (deactivate) plan (Admin)
-router.delete("/plans/:id", authProtect, membershipController.deletePlan);
+router.delete("/plans/:id", authProtect, checkPermission("memberships", "delete"), membershipController.deletePlan);
 
 // Seed default plans (Admin)
-router.post("/plans/seed", authProtect, membershipController.seedDefaultPlans);
+router.post("/plans/seed", authProtect, checkPermission("memberships", "create"), membershipController.seedDefaultPlans);
 
 // ==================== PATIENT MEMBERSHIPS ====================
 
@@ -54,14 +55,14 @@ router.get("/my-plan", patientProtect, membershipController.getMyPlan);
 router.post("/purchase", optionalAuth, membershipController.purchaseMembership);
 
 // Assign membership to patient (Admin)
-router.post("/assign", authProtect, membershipController.assignMembership);
+router.post("/assign", authProtect, checkPermission("memberships", "create"), membershipController.assignMembership);
 
 // Manually assign membership — supports inactive/custom plans, custom dates,
 // amount + payment method, notes (Admin, no payment gateway)
-router.post("/assign-manual", authProtect, membershipController.assignManualMembership);
+router.post("/assign-manual", authProtect, checkPermission("memberships", "create"), membershipController.assignManualMembership);
 
 // Renew patient's membership (Admin)
-router.post("/renew/:patientId", authProtect, membershipController.renewMembership);
+router.post("/renew/:patientId", authProtect, checkPermission("memberships", "edit"), membershipController.renewMembership);
 
 // Cancel patient's membership (Admin, Clinic Manager only)
 router.post("/cancel/:patientId", authProtect, membershipManagerOnly, membershipController.cancelMembership);

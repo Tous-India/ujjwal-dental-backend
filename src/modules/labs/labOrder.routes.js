@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as labOrderController from "./labOrder.controller.js";
 import { authProtect } from "../../middlewares/auth.middleware.js";
@@ -10,12 +11,12 @@ const router = Router();
  */
 
 router.get("/", authProtect, labOrderController.getAllLabOrders);
-router.post("/", authProtect, labOrderController.createLabOrder);
+router.post("/", authProtect, checkPermission("lab", "create"), labOrderController.createLabOrder);
 router.get("/stats", authProtect, labOrderController.getLabOrderStats);
 router.get("/:id", authProtect, labOrderController.getLabOrderById);
-router.patch("/:id", authProtect, labOrderController.updateLabOrder);
-router.post("/:id/payment", authProtect, labOrderController.recordLabOrderPayment);
-router.patch("/:id/archive", authProtect, labOrderController.archiveLabOrder);
-router.patch("/:id/unarchive", authProtect, labOrderController.unarchiveLabOrder);
+router.patch("/:id", authProtect, checkPermission("lab", "edit"), labOrderController.updateLabOrder);
+router.post("/:id/payment", authProtect, checkPermission("lab", "edit"), labOrderController.recordLabOrderPayment);
+router.patch("/:id/archive", authProtect, checkPermission("lab", "edit"), labOrderController.archiveLabOrder);
+router.patch("/:id/unarchive", authProtect, checkPermission("lab", "edit"), labOrderController.unarchiveLabOrder);
 
 export default router;

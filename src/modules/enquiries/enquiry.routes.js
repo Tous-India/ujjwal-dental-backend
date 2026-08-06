@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as enquiryController from "./enquiry.controller.js";
 import authProtect from "../../middlewares/auth.middleware.js";
@@ -55,17 +56,17 @@ router.get("/treatment/:treatmentId", enquiryController.getEnquiriesByTreatment)
 // CRUD routes
 router.get("/", enquiryController.getAllEnquiries);
 router.get("/:id", enquiryController.getEnquiryById);
-router.patch("/:id", enquiryController.updateEnquiry);
-router.delete("/:id", enquiryController.deleteEnquiry);
+router.patch("/:id", checkPermission("enquiries", "edit"), enquiryController.updateEnquiry);
+router.delete("/:id", checkPermission("enquiries", "delete"), enquiryController.deleteEnquiry);
 
 // Status and assignment routes
-router.patch("/:id/status", enquiryController.updateEnquiryStatus);
-router.patch("/:id/assign", enquiryController.assignEnquiry);
-router.patch("/:id/follow-up", enquiryController.scheduleFollowUp);
-router.patch("/:id/spam", enquiryController.markAsSpam);
-router.patch("/:id/convert", enquiryController.markConverted);
+router.patch("/:id/status", checkPermission("enquiries", "edit"), enquiryController.updateEnquiryStatus);
+router.patch("/:id/assign", checkPermission("enquiries", "edit"), enquiryController.assignEnquiry);
+router.patch("/:id/follow-up", checkPermission("enquiries", "edit"), enquiryController.scheduleFollowUp);
+router.patch("/:id/spam", checkPermission("enquiries", "edit"), enquiryController.markAsSpam);
+router.patch("/:id/convert", checkPermission("enquiries", "edit"), enquiryController.markConverted);
 
 // Notes
-router.post("/:id/notes", enquiryController.addNote);
+router.post("/:id/notes", checkPermission("enquiries", "edit"), enquiryController.addNote);
 
 export default router;

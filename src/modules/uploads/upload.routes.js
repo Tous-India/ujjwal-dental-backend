@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as uploadController from "./upload.controller.js";
 import { uploadSingle } from "../../middlewares/upload.middleware.js";
@@ -122,6 +123,11 @@ router.use(authProtect);
 
 // ========== SPECIAL ROUTES (must be before /:id) ==========
 
+// Mint a short-lived signature so the BROWSER can upload straight to
+// Cloudinary, bypassing Vercel's ~4.5MB serverless request body limit
+// (which silently killed every phone-camera photo).
+router.post("/signature", uploadController.getUploadSignature);
+
 // Get storage statistics
 router.get("/stats", uploadController.getStorageStats);
 
@@ -135,15 +141,15 @@ router.get("/", uploadController.getAllUploads);
 
 // Upload a new file
 // Uses uploadSingle middleware to handle file upload to Cloudinary
-router.post("/", uploadSingle("file"), uploadController.uploadFile);
+router.post("/", checkPermission("reports", "create"), uploadSingle("file"), uploadController.uploadFile);
 
 // Get single upload by ID
 router.get("/:id", uploadController.getUploadById);
 
 // Update upload metadata
-router.patch("/:id", uploadController.updateUpload);
+router.patch("/:id", checkPermission("reports", "edit"), uploadController.updateUpload);
 
 // Delete upload (removes from Cloudinary and database)
-router.delete("/:id", uploadController.deleteUpload);
+router.delete("/:id", checkPermission("reports", "delete"), uploadController.deleteUpload);
 
 export default router;

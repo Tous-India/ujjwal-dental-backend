@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as treatmentPageController from "./treatmentPage.controller.js";
 import authProtect from "../../middlewares/auth.middleware.js";
@@ -66,7 +67,7 @@ router.get("/all", authProtect, treatmentPageController.getAllPages);
 router.get("/id/:id", authProtect, treatmentPageController.getPageById);
 
 // Create treatment page
-router.post("/", authProtect, treatmentPageController.createPage);
+router.post("/", authProtect, checkPermission("blogs", "create"), treatmentPageController.createPage);
 
 // ========== PUBLIC ROUTES (continued) ==========
 
@@ -79,58 +80,58 @@ router.get("/:slug", treatmentPageController.getPageBySlug);
 // ========== ADMIN ROUTES (continued) ==========
 
 // Update treatment page
-router.patch("/:id", authProtect, treatmentPageController.updatePage);
+router.patch("/:id", authProtect, checkPermission("blogs", "edit"), treatmentPageController.updatePage);
 
 // Delete treatment page
-router.delete("/:id", authProtect, treatmentPageController.deletePage);
+router.delete("/:id", authProtect, checkPermission("blogs", "delete"), treatmentPageController.deletePage);
 
 // Publish/Unpublish
-router.patch("/:id/publish", authProtect, treatmentPageController.publishPage);
-router.patch("/:id/unpublish", authProtect, treatmentPageController.unpublishPage);
+router.patch("/:id/publish", authProtect, checkPermission("blogs", "edit"), treatmentPageController.publishPage);
+router.patch("/:id/unpublish", authProtect, checkPermission("blogs", "edit"), treatmentPageController.unpublishPage);
 
 // ========== SECTION MANAGEMENT ==========
 
 // Add section
-router.post("/:id/sections", authProtect, treatmentPageController.addSection);
+router.post("/:id/sections", authProtect, checkPermission("blogs", "edit"), treatmentPageController.addSection);
 
 // Reorder sections (must be before /:id/sections/:sectionId)
 router.patch(
   "/:id/sections/reorder",
-  authProtect,
+  authProtect, checkPermission("blogs", "edit"),
   treatmentPageController.reorderSections
 );
 
 // Update section
 router.patch(
   "/:id/sections/:sectionId",
-  authProtect,
+  authProtect, checkPermission("blogs", "edit"),
   treatmentPageController.updateSection
 );
 
 // Delete section
 router.delete(
   "/:id/sections/:sectionId",
-  authProtect,
+  authProtect, checkPermission("blogs", "delete"),
   treatmentPageController.deleteSection
 );
 
 // ========== FAQ MANAGEMENT ==========
 
 // Add FAQ
-router.post("/:id/faqs", authProtect, treatmentPageController.addFaq);
+router.post("/:id/faqs", authProtect, checkPermission("blogs", "edit"), treatmentPageController.addFaq);
 
 // Update FAQ
-router.patch("/:id/faqs/:faqId", authProtect, treatmentPageController.updateFaq);
+router.patch("/:id/faqs/:faqId", authProtect, checkPermission("blogs", "edit"), treatmentPageController.updateFaq);
 
 // Delete FAQ
-router.delete("/:id/faqs/:faqId", authProtect, treatmentPageController.deleteFaq);
+router.delete("/:id/faqs/:faqId", authProtect, checkPermission("blogs", "delete"), treatmentPageController.deleteFaq);
 
 // ========== PROCEDURE STEPS ==========
 
 // Update procedure steps
 router.patch(
   "/:id/procedure-steps",
-  authProtect,
+  authProtect, checkPermission("blogs", "edit"),
   treatmentPageController.updateProcedureSteps
 );
 

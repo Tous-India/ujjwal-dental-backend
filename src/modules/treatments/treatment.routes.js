@@ -50,18 +50,18 @@ router.get('/', authProtect, treatmentController.getAllTreatments);
 router.get('/:id', authProtect, treatmentController.getTreatmentById);
 
 // Add treatment to appointment — staff/admin
-router.post('/', authProtect, treatmentController.createTreatment);
+router.post('/', authProtect, checkPermission('treatments', 'create'), treatmentController.createTreatment);
 
 // Update treatment instance — staff/admin
-router.patch('/:id', authProtect, treatmentController.updateTreatment);
+router.patch('/:id', authProtect, checkPermission('treatments', 'edit'), treatmentController.updateTreatment);
 
 // Update treatment status — staff/admin
-router.patch('/:id/status', authProtect, treatmentController.updateTreatmentStatus);
+router.patch('/:id/status', authProtect, checkPermission('treatments', 'edit'), treatmentController.updateTreatmentStatus);
 
 // Add session to treatment (for multi-session treatments) — staff/admin
-router.post('/:id/sessions', authProtect, treatmentController.addSession);
+router.post('/:id/sessions', authProtect, checkPermission('treatments', 'edit'), treatmentController.addSession);
 
 // Schedule follow-up for treatment — staff/admin
-router.post('/:id/follow-up', authProtect, treatmentController.scheduleFollowUp);
+router.post('/:id/follow-up', authProtect, checkPermission('treatments', 'edit'), treatmentController.scheduleFollowUp);
 
 export default router;

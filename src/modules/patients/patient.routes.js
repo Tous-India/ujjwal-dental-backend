@@ -1,3 +1,4 @@
+import { checkPermission, checkPermissionIfStaff } from '../../middlewares/permission.middleware.js';
 import { Router } from 'express';
 import * as patientController from './patient.controller.js';
 import authProtect, { anyAuth, patientSelfOrAdmin } from '../../middlewares/auth.middleware.js';
@@ -30,19 +31,19 @@ router.get('/export', authProtect, patientController.exportPatients);
 router.get('/:id', anyAuth, patientSelfOrAdmin, patientController.getPatientById);
 
 // Create new patient — admin/staff
-router.post('/', authProtect, patientController.createPatient);
+router.post('/', authProtect, checkPermission('patients', 'create'), patientController.createPatient);
 
 // Update patient — admin/staff OR the patient themselves (own profile)
-router.patch('/:id', anyAuth, patientSelfOrAdmin, patientController.updatePatient);
+router.patch('/:id', anyAuth, patientSelfOrAdmin, checkPermissionIfStaff('patients', 'edit'), patientController.updatePatient);
 
 // Delete (deactivate) patient — admin/staff
-router.delete('/:id', authProtect, patientController.deletePatient);
+router.delete('/:id', authProtect, checkPermission('patients', 'delete'), patientController.deletePatient);
 
 // Reactivate (un-deactivate) patient — admin/staff
-router.patch('/:id/reactivate', authProtect, patientController.reactivatePatient);
+router.patch('/:id/reactivate', authProtect, checkPermission('patients', 'edit'), patientController.reactivatePatient);
 
 // Admin: set or reset a patient's password (set new OR generate temp). Never views it.
-router.patch('/:id/reset-password', authProtect, patientController.resetPatientPassword);
+router.patch('/:id/reset-password', authProtect, checkPermission('patients', 'edit'), patientController.resetPatientPassword);
 
 // Get patient's appointments — admin/staff
 router.get('/:id/appointments', authProtect, patientController.getPatientAppointments);

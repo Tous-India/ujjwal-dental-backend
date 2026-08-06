@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as paymentController from "./payment.controller.js";
 import { authProtect, anyAuth, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
@@ -37,15 +38,15 @@ router.get("/export/pdf", authProtect, paymentController.exportPaymentsPdf);
 router.get("/:id", anyAuth, paymentController.getPaymentById);
 
 // Record a payment (cash, UPI, card) - Admin
-router.post("/", authProtect, paymentController.createPayment);
+router.post("/", authProtect, checkPermission("payments", "create"), paymentController.createPayment);
 
 // ==================== SPECIALIZED PAYMENTS ====================
 
 // Record OPD payment - Admin
-router.post("/opd", authProtect, paymentController.recordOpdPayment);
+router.post("/opd", authProtect, checkPermission("payments", "create"), paymentController.recordOpdPayment);
 
 // Record membership payment - Admin
-router.post("/membership", authProtect, paymentController.recordMembershipPayment);
+router.post("/membership", authProtect, checkPermission("payments", "create"), paymentController.recordMembershipPayment);
 
 // Book a treatment to pay at the clinic (creates a pending payment) - Patient
 router.post("/pay-at-clinic", patientProtect, paymentController.payAtClinic);
@@ -64,15 +65,15 @@ router.post("/razorpay/webhook", paymentController.razorpayWebhook);
 // ==================== DELETE ====================
 
 // Permanently delete a payment - Admin
-router.delete("/:id", authProtect, paymentController.deletePayment);
+router.delete("/:id", authProtect, checkPermission("payments", "delete"), paymentController.deletePayment);
 
 // ==================== REFUNDS ====================
 
 // Process refund - Admin
-router.post("/:id/refund", authProtect, paymentController.processRefund);
+router.post("/:id/refund", authProtect, checkPermission("payments", "edit"), paymentController.processRefund);
 
 // Confirm a manual refund after Razorpay API failure - Admin
-router.post("/:id/confirm-manual-refund", authProtect, paymentController.confirmManualRefund);
+router.post("/:id/confirm-manual-refund", authProtect, checkPermission("payments", "edit"), paymentController.confirmManualRefund);
 
 // ==================== PATIENT PAYMENTS ====================
 
@@ -82,13 +83,13 @@ router.get("/patient/:patientId/summary", authProtect, paymentController.getPati
 // ==================== ADMIN MANUAL PAYMENT ====================
 
 // Record cash/UPI/card payment and auto-settle oldest invoices — Admin
-router.post("/admin/record-payment", authProtect, paymentController.recordAdminPayment);
+router.post("/admin/record-payment", authProtect, checkPermission("payments", "create"), paymentController.recordAdminPayment);
 
 // Collect payment for a specific invoice — Admin
-router.post("/admin/collect", authProtect, paymentController.collectPayment);
+router.post("/admin/collect", authProtect, checkPermission("payments", "create"), paymentController.collectPayment);
 
 // Reverse an admin-recorded payment — Admin
-router.post("/admin/reverse-payment", authProtect, paymentController.reverseAdminPayment);
+router.post("/admin/reverse-payment", authProtect, checkPermission("payments", "edit"), paymentController.reverseAdminPayment);
 
 // Create Razorpay order for pending invoice balance — Patient
 router.post("/patient/create-pending-order", patientProtect, paymentController.createPendingOrder);

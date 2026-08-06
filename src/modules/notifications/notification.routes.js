@@ -1,3 +1,4 @@
+import { checkPermission } from "../../middlewares/permission.middleware.js";
 import { Router } from "express";
 import * as notificationController from "./notification.controller.js";
 import { authProtect, anyAuth } from "../../middlewares/auth.middleware.js";
@@ -27,16 +28,16 @@ router.get("/admin/all", authProtect, notificationController.getAllNotifications
 router.get("/admin/stats", authProtect, notificationController.getNotificationStats);
 
 // Send notification manually (Admin)
-router.post("/send", authProtect, notificationController.sendNotification);
+router.post("/send", authProtect, checkPermission("notifications", "create"), notificationController.sendNotification);
 
 // Send bulk notifications (Admin)
-router.post("/send-bulk", authProtect, notificationController.sendBulkNotifications);
+router.post("/send-bulk", authProtect, checkPermission("notifications", "create"), notificationController.sendBulkNotifications);
 
 // Create appointment reminder notification
-router.post("/reminder/appointment", authProtect, notificationController.createAppointmentReminder);
+router.post("/reminder/appointment", authProtect, checkPermission("notifications", "create"), notificationController.createAppointmentReminder);
 
 // Create payment reminder notification
-router.post("/reminder/payment", authProtect, notificationController.createPaymentReminder);
+router.post("/reminder/payment", authProtect, checkPermission("notifications", "create"), notificationController.createPaymentReminder);
 
 // ==================== USER NOTIFICATIONS ====================
 

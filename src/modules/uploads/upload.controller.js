@@ -2,6 +2,56 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import Upload from "./upload.model.js";
 import { deleteFromCloudinary } from "../../middlewares/upload.middleware.js";
+import { cloudinary } from "../../config/cloudinary.js";
+import {
+  CLOUDINARY_UPLOAD_FOLDER,
+  SIGNATURE_TTL_SECONDS,
+} from "../../utils/cloudinaryDirect.js";
+
+/**
+ * @desc    Mint a short-lived signature for a DIRECT browser->Cloudinary upload
+ * @route   POST /api/uploads/signature
+ * @access  Authenticated staff/admin
+ *
+ * Large files (phone camera photos are routinely 3-12MB) cannot be streamed
+ * through this API at all: Vercel caps serverless request bodies at ~4.5MB as
+ * a platform limit. The browser therefore uploads straight to Cloudinary with
+ * the signature returned here and only posts back the resulting URL.
+ * See src/utils/cloudinaryDirect.js for the full rationale.
+ *
+ * `folder` is fixed server-side and included in the signed payload, so a
+ * caller cannot redirect uploads elsewhere in the account. This is a SIGNED
+ * upload -- no unsigned preset is ever exposed.
+ */
+export const getUploadSignature = asyncHandler(async (req, res) => {
+  const { CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, CLOUDINARY_CLOUD_NAME } = process.env;
+
+  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET || !CLOUDINARY_CLOUD_NAME) {
+    return ApiResponse.error(res, "File uploads are not configured on the server", 500);
+  }
+
+  const timestamp = Math.round(Date.now() / 1000);
+
+  // Only these params are signed, so these are the only ones Cloudinary will
+  // honour -- the client must send back exactly the same folder/timestamp.
+  const signature = cloudinary.utils.api_sign_request(
+    { folder: CLOUDINARY_UPLOAD_FOLDER, timestamp },
+    CLOUDINARY_API_SECRET
+  );
+
+  ApiResponse.success(
+    res,
+    {
+      signature,
+      timestamp,
+      folder: CLOUDINARY_UPLOAD_FOLDER,
+      apiKey: CLOUDINARY_API_KEY,
+      cloudName: CLOUDINARY_CLOUD_NAME,
+      expiresIn: SIGNATURE_TTL_SECONDS,
+    },
+    "Upload signature generated"
+  );
+});
 
 /**
  * UPLOAD CONTROLLER

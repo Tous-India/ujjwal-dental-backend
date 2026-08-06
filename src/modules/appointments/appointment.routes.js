@@ -2,7 +2,7 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import * as appointmentController from "./appointment.controller.js";
 import authProtect, { anyAuth, optionalAuth, patientProtect } from "../../middlewares/auth.middleware.js";
-import { checkPermission } from "../../middlewares/permission.middleware.js";
+import { checkPermission, checkPermissionIfStaff } from "../../middlewares/permission.middleware.js";
 import Appointment from "./appointment.model.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 const router = Router();
@@ -65,7 +65,7 @@ router.get("/unbilled", authProtect, appointmentController.getUnbilledAppointmen
 router.get("/available-slots", optionalAuth, appointmentController.getAvailableSlots);
 
 // Create new appointment (book) — public; optionalAuth records staff id when present
-router.post("/", optionalAuth, appointmentController.createAppointment);
+router.post("/", optionalAuth, checkPermissionIfStaff("appointments", "create"), appointmentController.createAppointment);
 
 // Book appointment after payment (public - for online booking)
 router.post("/book-with-payment", appointmentController.bookAppointmentWithPayment);
@@ -74,22 +74,22 @@ router.post("/book-with-payment", appointmentController.bookAppointmentWithPayme
 router.post("/book-free", patientProtect, appointmentController.bookAppointmentFree);
 
 // Update appointment details — staff/admin
-router.patch("/:id", authProtect, appointmentController.updateAppointment);
+router.patch("/:id", authProtect, checkPermission("appointments", "edit"), appointmentController.updateAppointment);
 
 // Update appointment status — staff/admin
-router.patch("/:id/status", authProtect, appointmentController.updateStatus);
+router.patch("/:id/status", authProtect, checkPermission("appointments", "edit"), appointmentController.updateStatus);
 
 // Check-in patient — staff/admin
-router.post("/:id/check-in", authProtect, appointmentController.checkIn);
+router.post("/:id/check-in", authProtect, checkPermission("appointments", "edit"), appointmentController.checkIn);
 
 // Complete appointment — staff/admin
-router.post("/:id/complete", authProtect, appointmentController.completeAppointment);
+router.post("/:id/complete", authProtect, checkPermission("appointments", "edit"), appointmentController.completeAppointment);
 
 // Cancel appointment — patient-self or staff/admin
-router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, appointmentController.cancelAppointment);
+router.post("/:id/cancel", anyAuth, appointmentSelfOrAdmin, checkPermissionIfStaff("appointments", "edit"), appointmentController.cancelAppointment);
 
 // Reschedule appointment — admin/staff only
-router.post("/:id/reschedule", authProtect, appointmentController.rescheduleAppointment);
+router.post("/:id/reschedule", authProtect, checkPermission("appointments", "edit"), appointmentController.rescheduleAppointment);
 
 // Close treatment plan (cancel remaining sessions + reconcile invoice) — admin / clinic manager
 router.post("/:id/close-treatment", authProtect, checkPermission("appointments", "edit"), appointmentController.closeTreatmentPlan);

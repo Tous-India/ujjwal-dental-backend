@@ -49,34 +49,34 @@ router.get("/my-summary", patientProtect, billingController.getMyBillingSummary)
 router.get("/invoices/:id", anyAuth, billingController.getInvoiceById);
 
 // Create new invoice - Admin
-router.post("/invoices", authProtect, billingController.createInvoice);
+router.post("/invoices", authProtect, checkPermission("billing", "create"), billingController.createInvoice);
 
 // Update invoice (add items, update details) - Admin
-router.patch("/invoices/:id", authProtect, billingController.updateInvoice);
+router.patch("/invoices/:id", authProtect, checkPermission("billing", "edit"), billingController.updateInvoice);
 
 // ==================== INVOICE ITEMS ====================
 
 // Add item to invoice - Admin
-router.post("/invoices/:id/items", authProtect, billingController.addInvoiceItem);
+router.post("/invoices/:id/items", authProtect, checkPermission("billing", "edit"), billingController.addInvoiceItem);
 
 // Remove item from invoice - Admin
-router.delete("/invoices/:id/items/:itemId", authProtect, billingController.removeInvoiceItem);
+router.delete("/invoices/:id/items/:itemId", authProtect, checkPermission("billing", "edit"), billingController.removeInvoiceItem);
 
 // Delete invoice permanently - Admin
-router.delete("/invoices/:id", authProtect, billingController.deleteInvoice);
+router.delete("/invoices/:id", authProtect, checkPermission("billing", "delete"), billingController.deleteInvoice);
 
 // ==================== INVOICE ACTIONS ====================
 
 // Issue invoice (finalize and send to patient) - Admin
-router.post("/invoices/:id/issue", authProtect, billingController.issueInvoice);
+router.post("/invoices/:id/issue", authProtect, checkPermission("billing", "edit"), billingController.issueInvoice);
 
 // Cancel invoice - Admin
-router.post("/invoices/:id/cancel", authProtect, billingController.cancelInvoice);
+router.post("/invoices/:id/cancel", authProtect, checkPermission("billing", "edit"), billingController.cancelInvoice);
 router.post("/invoices/:id/void", authProtect, checkPermission("billing", "delete"), billingController.voidInvoice);
 router.patch("/invoices/:id/correct", authProtect, checkPermission("billing", "edit"), billingController.correctInvoice);
 
 // Record payment on invoice - Admin
-router.post("/invoices/:id/payment", authProtect, billingController.recordPayment);
+router.post("/invoices/:id/payment", authProtect, checkPermission("payments", "create"), billingController.recordPayment);
 
 // Download invoice as PDF
 router.get("/invoices/:id/pdf", anyAuth, billingController.downloadInvoicePdf);
