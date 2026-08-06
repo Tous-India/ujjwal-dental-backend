@@ -4,7 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import User from "../users/user.model.js";
 import Patient from "../patients/patient.model.js";
-import { sendEmail, sendOtpEmail } from "../../utils/email.js";
+import { sendEmail } from "../../utils/email.js";
 import { fireWhatsApp } from "../../utils/whatsapp.js";
 
 /**
@@ -378,106 +378,47 @@ export const patientChangePassword = asyncHandler(async (req, res) => {
  * @route   POST /api/auth/patient/login
  * @access  Public
  */
-export const patientLogin = asyncHandler(async (req, res) => {
-  const { email } = req.body;
+/**
+ * RETIRED: legacy EMAIL-based patient OTP login.
+ *
+ * Removed from service because it was strictly weaker than the login it sat
+ * beside, on a portal holding real medical records:
+ *   - stored the OTP in PLAINTEXT (patient.otp.code)
+ *   - no attempt cap -- a 6-digit code could be brute-forced
+ *   - no rate limiting -- anyone could spam a patient's inbox
+ *   - leaked account enumeration via a 404 "Patient not found"
+ * It was also unusable for most patients, who have no email on file.
+ *
+ * Superseded by the WhatsApp OTP flow (POST /api/patients/auth/request-otp and
+ * /verify-otp), which is hashed, rate limited, attempt capped and
+ * non-enumerating.
+ *
+ * Answers 410 Gone rather than being deleted outright: a removed route would
+ * fall through to the generic 404 handler, which is indistinguishable from a
+ * typo. 410 tells any lingering client -- a cached JS bundle, a webview, a
+ * bookmarked call -- exactly what happened and where to go instead.
+ *
+ * NOTE: the password login (/api/auth/patient/login-password) is deliberately
+ * untouched and still works. It is the transition fallback.
+ */
+const retiredEmailOtpEndpoint = (req, res) =>
+  res.status(410).json({
+    success: false,
+    message:
+      "Email OTP login has been retired. Please log in with the code sent to your WhatsApp, or use your password.",
+  });
 
-  if (!email) {
-    return ApiResponse.error(res, "Please provide email address", 400);
-  }
+export const patientLogin = retiredEmailOtpEndpoint;
+export const verifyOtp = retiredEmailOtpEndpoint;
+export const resendOtp = retiredEmailOtpEndpoint;
 
-  // Validate email format
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
-    return ApiResponse.error(res, "Please provide a valid email address", 400);
-  }
-
-  // Find patient by email (case-insensitive)
-  let patient = await Patient.findOne({ email: email.toLowerCase() });
-
-  if (!patient) {
-    return ApiResponse.error(
-      res,
-      "Patient not found. Connect to the doctor.",
-      404,
-    );
-  }
-
-  // Check if patient is active
-  if (!patient.isActive) {
-    return ApiResponse.error(res, "Your account has been deactivated", 401);
-  }
-
-  // Generate OTP
-  const otp = patient.generateOTP();
-  await patient.save();
-
-  // Send OTP via email
-  const emailResult = await sendOtpEmail(patient.email, otp, patient.name);
-
-  if (!emailResult.success) {
-    console.error("Failed to send OTP email:", emailResult.error);
-  }
-
-  ApiResponse.success(
-    res,
-    { email: patient.email, otpSent: true },
-    "OTP sent to your email address",
-  );
-});
 
 /**
  * @desc    Verify OTP for patient (email-based)
  * @route   POST /api/auth/patient/verify-otp
  * @access  Public
  */
-export const verifyOtp = asyncHandler(async (req, res) => {
-  const { email, otp } = req.body;
 
-  if (!email || !otp) {
-    return ApiResponse.error(res, "Please provide email and OTP", 400);
-  }
-
-  // Find patient by email
-  const patient = await Patient.findOne({ email: email.toLowerCase() });
-
-  if (!patient) {
-    return ApiResponse.error(res, "Patient not found", 404);
-  }
-
-  // Verify OTP
-  const isValid = patient.verifyOTP(otp);
-
-  if (!isValid) {
-    return ApiResponse.error(res, "Invalid or expired OTP", 400);
-  }
-
-  // Clear OTP after successful verification
-  patient.clearOTP();
-  await patient.save();
-
-  // Generate token
-  const token = generateToken({
-    id: patient._id,
-    type: "patient",
-  });
-
-  res.cookie("patient_token", token, COOKIE_OPTIONS);
-
-  // Return patient data
-  const patientData = {
-    _id: patient._id,
-    name: patient.name,
-    phone: patient.phone,
-    email: patient.email,
-    hasMembership: patient.hasMembership,
-  };
-
-  ApiResponse.success(
-    res,
-    { patient: patientData, token },
-    "OTP verified successfully",
-  );
-});
 
 /**
  * @desc    Patient login with password
@@ -584,7 +525,8 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
  * -- status code, message, or response time -- would turn this endpoint into a
  * "is this number a patient here?" oracle against real medical records.
  */
-const OTP_REQUEST_GENERIC = "If that number is registered, a login code has been sent to it on WhatsApp.";
+const OTP_REQUEST_GENERIC =
+  "If this number is registered with us, you'll receive a login code on WhatsApp within a minute. Didn't receive it? Please check the number, or call us at +91-9467776028.";
 
 /**
  * @desc    Request a WhatsApp login OTP
@@ -713,33 +655,7 @@ export const verifyPatientLoginOtp = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, { patient: patientData, token }, "Logged in successfully");
 });
 
-export const resendOtp = asyncHandler(async (req, res) => {
-  const { email } = req.body;
 
-  if (!email) {
-    return ApiResponse.error(res, "Please provide email address", 400);
-  }
-
-  // Find patient by email
-  const patient = await Patient.findOne({ email: email.toLowerCase() });
-
-  if (!patient) {
-    return ApiResponse.error(res, "Patient not found", 404);
-  }
-
-  // Generate new OTP
-  const otp = patient.generateOTP();
-  await patient.save();
-
-  // Send OTP via email
-  const emailResult = await sendOtpEmail(patient.email, otp, patient.name);
-
-  if (!emailResult.success) {
-    console.error("Failed to resend OTP email:", emailResult.error);
-  }
-
-  ApiResponse.success(res, { email: patient.email, otpSent: true }, "OTP resent successfully");
-});
 
 /**
  * @desc    Get current logged in patient

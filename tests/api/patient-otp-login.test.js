@@ -235,6 +235,33 @@ describe("Patient WhatsApp OTP login", () => {
     expect(me.status).toBe(200);
   });
 
+  it("the request message carries the full guidance copy, identically for both cases", async () => {
+    const known = await requestOtp();
+    const unknown = await requestOtp(UNREGISTERED);
+
+    const EXPECTED =
+      "If this number is registered with us, you'll receive a login code on WhatsApp within a minute. Didn't receive it? Please check the number, or call us at +91-9467776028.";
+
+    expect(known.body.message).toBe(EXPECTED);
+    expect(unknown.body.message).toBe(EXPECTED);
+    // The guidance must survive verbatim -- it is what tells a patient who
+    // mistyped their number what to do next.
+    expect(known.body.message).toContain("+91-9467776028");
+  });
+
+  it("the RETIRED email-OTP endpoints answer 410 Gone, not 404 or a working login", async () => {
+    for (const path of [
+      "/api/auth/patient/login",
+      "/api/auth/patient/verify-otp",
+      "/api/auth/patient/resend-otp",
+    ]) {
+      const res = await request(app).post(path).send({ email: "x@y.com", otp: "123456" });
+      expect(res.status).toBe(410);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toMatch(/retired/i);
+    }
+  });
+
   it("rejects a malformed phone number without touching the DB", async () => {
     const res = await requestOtp("12345");
     expect(res.status).toBe(400);
