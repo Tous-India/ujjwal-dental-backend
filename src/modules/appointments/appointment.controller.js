@@ -9,6 +9,7 @@ import SystemSettings from "../settings/settings.model.js";
 import { TreatmentMaster } from "../treatments/treatment.model.js";
 import { generateInvoice } from "../billing/invoice.service.js";
 import Invoice from "../billing/invoice.model.js";
+import Clinic from "../clinics/clinic.model.js";
 import mongoose from "mongoose";
 import { sendEmail } from "../../utils/email.js";
 import dispatchBookingNotifications from "../../utils/dispatchBookingNotifications.js";
@@ -851,7 +852,17 @@ export const createAppointment = asyncHandler(async (req, res) => {
 
     dispatchBookingNotifications(sessionAppt._id);
 
-    fireWhatsApp(patient.phone, "session_booked", { date, time: timeSlot }, patient.name);
+    // Sessions are ALWAYS free at booking time -- this branch hardcodes
+    // fee: 0 / isFree: true / paymentStatus: "free" (the parent treatment's
+    // invoice covers them), so there is no paid-session path here. The old
+    // "session_booked" template embeds an amount it can therefore never
+    // legitimately fill, which is why sessions were silent.
+    fireWhatsApp(
+      patient.phone,
+      "session_booked_free",
+      { treatmentName: parent.treatmentName || "your treatment", date, time: timeSlot },
+      patient.name
+    );
 
     const populated = await Appointment.findById(sessionAppt._id)
       .populate("patient", "name phone email")
@@ -1170,6 +1181,47 @@ export const createAppointment = asyncHandler(async (req, res) => {
   /* =======================
      RESPONSE
   ======================== */
+
+  // Amount-free booking confirmation.
+  //
+  // MUTUALLY EXCLUSIVE with payment_recorded, which fires above ONLY inside
+  // `if (appointmentOpdFeePaid)`. So exactly one of the two ever fires:
+  //   - fee collected at booking  -> payment_recorded (receipt), unchanged
+  //   - free OR nothing collected -> appointment_booked_free (confirmation)
+  // Never both, so there is no double-messaging.
+  //
+  // This deliberately also covers the POSTPAY case (chargeable, but
+  // opdFeePaid false): those bookings previously sent nothing at all, because
+  // every booking template embedded an amount that hadn't been collected yet.
+  // NOTE on the condition: a FREE booking sets appointmentOpdFeePaid = true
+  // above (nothing is owed, so it counts as settled), which means
+  // `!appointmentOpdFeePaid` alone would have EXCLUDED free bookings -- the
+  // exact case this exists for. isFree is therefore checked explicitly.
+  if (appointmentIsFree || !appointmentOpdFeePaid) {
+    // {{3}} is the clinic BRANCH name -- only the id is in scope here, so one
+    // lean lookup. Falls back to the generic name if it can't be resolved,
+    // since a missing param would malform the template send.
+    let clinicName = "Ujjwal Dental Clinic";
+    try {
+      const clinicDoc = await Clinic.findById(clinic).select("name").lean();
+      if (clinicDoc?.name) clinicName = clinicDoc.name;
+    } catch {
+      // Non-fatal -- keep the fallback, never block or fail the booking.
+    }
+
+    fireWhatsApp(
+      patient.phone,
+      "appointment_booked_free",
+      {
+        date: appointment.date
+          ? new Date(appointment.date).toLocaleDateString("en-IN")
+          : "-",
+        time: appointment.timeSlot,
+        clinic: clinicName,
+      },
+      patient.name
+    );
+  }
 
   dispatchBookingNotifications(appointment._id);
 

@@ -37,6 +37,14 @@ export const WHATSAPP_TEMPLATES = {
     "Your next treatment session is confirmed for {date} at {time}, Ujjwal Dental Clinic. See you soon!",
   payment_link:
     "Hi! Please complete your payment of Rs{amount} for {description} at Ujjwal Dental Clinic using this secure link: {shortUrl}",
+  // Amount-free booking confirmations. Every existing booking-related
+  // template embeds a payment amount, so a FREE booking (and a postpay
+  // booking, where nothing is collected yet) had no template it could
+  // legally fill -- those patients received nothing at all.
+  appointment_booked_free:
+    "Your appointment at Ujjwal Dental Clinic is confirmed.\nDate: {date}\nTime: {time}\nClinic: {clinic}\n\nPlease arrive 10 minutes early. Call +91-9467776028 for any changes.",
+  session_booked_free:
+    "Your {treatmentName} session at Ujjwal Dental Clinic is confirmed.\nDate: {date}\nTime: {time}\n\nSee you soon!",
 };
 
 /**
@@ -66,6 +74,12 @@ export const TEMPLATE_NAME_MAP = {
   // Razorpay short_url is ALWAYS returned/stored regardless, so the admin UI
   // can show it for manual copy no matter what this send does.
   payment_link: "payment_link",
+  // Amount-free booking confirmations (see WHATSAPP_TEMPLATES above).
+  // ⚠ These two strings must match EXACTLY what Sunny registered in Tous
+  // Connect. If she submitted them under different names, changing these two
+  // lines is the ONLY edit required anywhere in the codebase.
+  appointment_booked_free: "appointment_booked_free",
+  session_booked_free: "session_booked_free",
 };
 
 // WhatsApp template body parameters must be non-empty strings.
@@ -109,6 +123,22 @@ const buildBodyParams = (templateType, phone, data) => {
         textParam(data.date),
         textParam(data.time),
         textParam(data.clinic || "Ujjwal Dental Clinic"),
+      ];
+    // ---- Amount-free booking confirmations ----
+    // {{1}} date, {{2}} time, {{3}} clinic -- confirmed against the templates
+    // as submitted to Tous Connect.
+    case "appointment_booked_free":
+      return [
+        textParam(data.date),
+        textParam(data.time),
+        textParam(data.clinic || "Ujjwal Dental Clinic"),
+      ];
+    // Unambiguous -- spec named all three in order.
+    case "session_booked_free":
+      return [
+        textParam(data.treatmentName || "your treatment"),
+        textParam(data.date),
+        textParam(data.time),
       ];
     case "report_shared":
       return [textParam(data.reportTitle || "your report")];

@@ -144,7 +144,11 @@ describe("WhatsApp notification dispatch (stubbed)", () => {
     }
   });
 
-  it("T1 (HARD GATE): session_booked fires when a treatment_session appointment is booked via POST /api/appointments", async () => {
+  // Sessions now fire session_booked_free, NOT the old amount-bearing
+  // session_booked. Sessions are always free at booking (the parent
+  // treatment's invoice covers them), so the old template could never
+  // legitimately fill its amount variable -- which is why sessions were silent.
+  it("T1 (HARD GATE): session_booked_free fires when a treatment_session appointment is booked via POST /api/appointments", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const tomorrow = new Date();
@@ -207,7 +211,7 @@ describe("WhatsApp notification dispatch (stubbed)", () => {
 
       const calls = stubCalls(logSpy);
       const match = calls.find(
-        (args) => args[0].includes('"session_booked"') && args[0].includes(testData.patient.phone)
+        (args) => args[0].includes('"session_booked_free"') && args[0].includes(testData.patient.phone)
       );
       expect(match).toBeTruthy();
 
