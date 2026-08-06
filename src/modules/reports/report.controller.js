@@ -4,6 +4,7 @@ import Report from "./report.model.js";
 import { Test } from "../tests/test.model.js";
 import Patient from "../patients/patient.model.js";
 import { deleteFromCloudinary, getSignedUrl } from "../../middlewares/upload.middleware.js";
+import { normalizeDirectUploadFiles } from "../../utils/cloudinaryDirect.js";
 import mongoose from "mongoose";
 
 /**
@@ -157,8 +158,48 @@ export const uploadReport = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Patient, title and category are required", 400);
   }
 
-  // Check if at least one file was uploaded
-  if (!req.uploadedFiles || req.uploadedFiles.length === 0) {
+  /**
+   * Files arrive one of two ways:
+   *
+   *  A. DIRECT (current): the browser uploaded straight to Cloudinary using a
+   *     signature from POST /api/uploads/signature, and posts back only the
+   *     resulting metadata as JSON `files: [...]`. Nothing large transits this
+   *     serverless function, so Vercel's ~4.5MB request body limit -- which
+   *     silently killed every phone-camera photo, and applied CUMULATIVELY
+   *     across a 10-file request -- no longer applies.
+   *
+   *  B. MULTIPART (legacy): files streamed through this API via multer. Kept
+   *     working so any older client, and the single-file replace endpoint,
+   *     are unaffected.
+   *
+   * Client-reported metadata is NEVER trusted: normalizeDirectUploadFiles
+   * re-validates that every URL genuinely points at OUR Cloudinary cloud and
+   * OUR folder. Without that, an authenticated caller could persist an
+   * arbitrary third-party URL onto a patient's medical record.
+   */
+  let incomingFiles = null;
+
+  if (req.uploadedFiles && req.uploadedFiles.length > 0) {
+    incomingFiles = req.uploadedFiles;
+  } else if (req.body.files !== undefined) {
+    // `files` may arrive as a JSON string if a client sends it via FormData.
+    let rawFiles = req.body.files;
+    if (typeof rawFiles === "string") {
+      try {
+        rawFiles = JSON.parse(rawFiles);
+      } catch {
+        return ApiResponse.error(res, "Invalid files payload", 400);
+      }
+    }
+
+    const { files: validated, error } = normalizeDirectUploadFiles(rawFiles, 10);
+    if (error) {
+      return ApiResponse.error(res, error, 400);
+    }
+    incomingFiles = validated;
+  }
+
+  if (!incomingFiles || incomingFiles.length === 0) {
     return ApiResponse.error(res, "At least one file is required", 400);
   }
 
@@ -178,14 +219,16 @@ export const uploadReport = asyncHandler(async (req, res) => {
     }
   }
 
-  const files = req.uploadedFiles.map((f, index) => ({
+  const files = incomingFiles.map((f, index) => ({
     url: f.url,
     publicId: f.publicId,
     fileName: f.fileName,
     fileSize: f.fileSize,
     fileType: f.fileType,
     thumbnailUrl: f.thumbnailUrl,
-    description: descriptionsArr[index] || "",
+    // Direct uploads may carry their own per-file description; otherwise fall
+    // back to the parallel `descriptions` array the multipart path uses.
+    description: f.description || descriptionsArr[index] || "",
   }));
 
   // Create report -- createSafe retries on a duplicate reportNumber

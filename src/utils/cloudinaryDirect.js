@@ -148,6 +148,12 @@ export const normalizeDirectUploadFiles = (rawFiles, maxFiles = 10) => {
       fileSize,
       fileType: typeof raw.fileType === "string" ? raw.fileType : undefined,
       thumbnailUrl: isOwnCloudinaryUrl(raw.thumbnailUrl) ? raw.thumbnailUrl : undefined,
+      // The per-file description the admin typed against this slot. Carried
+      // through here because the direct path sends it alongside each file
+      // rather than in a parallel `descriptions` array like the multipart
+      // path did -- dropping it silently lost the admin's notes.
+      description:
+        typeof raw.description === "string" ? raw.description.trim().slice(0, 500) : undefined,
     });
   }
 
