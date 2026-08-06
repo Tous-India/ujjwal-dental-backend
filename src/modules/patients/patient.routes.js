@@ -2,6 +2,8 @@ import { checkPermission, checkPermissionIfStaff } from '../../middlewares/permi
 import { Router } from 'express';
 import * as patientController from './patient.controller.js';
 import authProtect, { anyAuth, patientSelfOrAdmin } from '../../middlewares/auth.middleware.js';
+import * as authController from '../auth/auth.controller.js';
+import { authLimiter } from '../../middlewares/rateLimit.middleware.js';
 
 const router = Router();
 
@@ -15,6 +17,14 @@ const router = Router();
  *                              portal reads (profile, treatments, payments,
  *                              membership) — guarded by anyAuth + patientSelfOrAdmin
  */
+
+// ---- PUBLIC: WhatsApp OTP login for the patient portal ----
+// Registered BEFORE '/:id' (and before the authProtect'd routes) so "auth" is
+// never parsed as a patient id, and so these stay unauthenticated by design.
+// Rate limiting is enforced per-phone inside the controller, on top of the
+// app-wide limiter.
+router.post('/auth/request-otp', authLimiter, authController.requestPatientLoginOtp);
+router.post('/auth/verify-otp', authLimiter, authController.verifyPatientLoginOtp);
 
 // Get all patients (with pagination & search) — admin/staff
 router.get('/', authProtect, patientController.getAllPatients);

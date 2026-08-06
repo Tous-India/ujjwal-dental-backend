@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 
 /**
  * PATIENT MODEL
@@ -134,10 +135,40 @@ const patientSchema = new mongoose.Schema(
     resetPasswordToken: String,
     resetPasswordExpires: Date,
 
-    // OTP for login
+    // LEGACY email-based login OTP. Stores the code in PLAINTEXT and has no
+    // attempt cap or rate limiting -- superseded by `loginOtp` below, which is
+    // hashed, attempt-capped and rate-limited. Left in place only because the
+    // email flow (/api/auth/patient/login) is still wired; retiring that flow
+    // should delete this field with it.
     otp: {
       code: String,
       expiresAt: Date,
+    },
+
+    /**
+     * WhatsApp login OTP.
+     *
+     * Stored on the Patient doc rather than a separate collection: the request
+     * and verify paths both already load the patient by phone, so this needs no
+     * extra query or join, and it keeps auth state in the one place a reader
+     * would look for it. A separate collection would only pay off if we needed
+     * OTPs for non-patient entities or native TTL expiry -- neither applies,
+     * and expiry is enforced explicitly on read anyway.
+     *
+     * `codeHash` is a bcrypt hash -- the plaintext code exists only in memory
+     * long enough to be sent over WhatsApp, and is never persisted.
+     *
+     * select:false so the hash never rides along on ordinary patient reads
+     * (patient lists, detail modals, exports).
+     */
+    loginOtp: {
+      codeHash: { type: String, select: false },
+      expiresAt: { type: Date, select: false },
+      attempts: { type: Number, default: 0, select: false },
+      lastSentAt: { type: Date, select: false },
+      // Rolling window used for the ~5/hour cap.
+      sendCount: { type: Number, default: 0, select: false },
+      windowStartedAt: { type: Date, select: false },
     },
 
     // -------- Personal Info --------
@@ -301,6 +332,140 @@ patientSchema.methods.verifyOTP = function (enteredOTP) {
  */
 patientSchema.methods.clearOTP = function () {
   this.otp = undefined;
+};
+
+// ============ WHATSAPP LOGIN OTP ============
+
+/** How long a login OTP stays valid. */
+export const LOGIN_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+/** Minimum gap between two OTP sends to the same phone. */
+export const LOGIN_OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
+/** Max sends per phone per rolling window. */
+export const LOGIN_OTP_MAX_SENDS_PER_WINDOW = 5;
+export const LOGIN_OTP_SEND_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+/** Wrong-code attempts before the OTP is destroyed outright. */
+export const LOGIN_OTP_MAX_ATTEMPTS = 5;
+
+/**
+ * Whether a new OTP may be sent right now.
+ * @returns {{ allowed: boolean, reason?: "cooldown"|"hourly", retryAfterSec?: number }}
+ */
+patientSchema.methods.canSendLoginOtp = function () {
+  const now = Date.now();
+  const otp = this.loginOtp || {};
+
+  if (otp.lastSentAt) {
+    const since = now - new Date(otp.lastSentAt).getTime();
+    if (since < LOGIN_OTP_RESEND_COOLDOWN_MS) {
+      return {
+        allowed: false,
+        reason: "cooldown",
+        retryAfterSec: Math.ceil((LOGIN_OTP_RESEND_COOLDOWN_MS - since) / 1000),
+      };
+    }
+  }
+
+  // Rolling hourly cap -- the window resets once it has fully elapsed.
+  if (otp.windowStartedAt) {
+    const windowAge = now - new Date(otp.windowStartedAt).getTime();
+    if (windowAge < LOGIN_OTP_SEND_WINDOW_MS && (otp.sendCount || 0) >= LOGIN_OTP_MAX_SENDS_PER_WINDOW) {
+      return {
+        allowed: false,
+        reason: "hourly",
+        retryAfterSec: Math.ceil((LOGIN_OTP_SEND_WINDOW_MS - windowAge) / 1000),
+      };
+    }
+  }
+
+  return { allowed: true };
+};
+
+/**
+ * Generate a 6-digit login OTP, storing ONLY its bcrypt hash.
+ * Returns the plaintext code for immediate dispatch -- it is never persisted.
+ *
+ * Uses crypto.randomInt (CSPRNG), not Math.random, since this code is a
+ * credential.
+ */
+patientSchema.methods.generateLoginOtp = async function () {
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+  const now = new Date();
+
+  const prev = this.loginOtp || {};
+  const windowExpired =
+    !prev.windowStartedAt ||
+    Date.now() - new Date(prev.windowStartedAt).getTime() >= LOGIN_OTP_SEND_WINDOW_MS;
+
+  this.loginOtp = {
+    codeHash: await bcrypt.hash(code, 10),
+    expiresAt: new Date(Date.now() + LOGIN_OTP_TTL_MS),
+    attempts: 0,
+    lastSentAt: now,
+    sendCount: windowExpired ? 1 : (prev.sendCount || 0) + 1,
+    windowStartedAt: windowExpired ? now : prev.windowStartedAt,
+  };
+
+  return code;
+};
+
+/**
+ * Verify a submitted login OTP.
+ *
+ * @returns {Promise<{ ok: boolean, reason?: "none"|"expired"|"locked"|"mismatch", attemptsRemaining?: number }>}
+ *
+ * On the LOGIN_OTP_MAX_ATTEMPTS-th failure the stored hash is destroyed, so a
+ * 6-digit code can never be brute-forced -- a fresh request is then required.
+ * The caller must persist the document afterwards (attempts/clearing are
+ * mutations).
+ */
+patientSchema.methods.verifyLoginOtp = async function (submitted) {
+  const otp = this.loginOtp;
+
+  if (!otp || !otp.codeHash) return { ok: false, reason: "none" };
+
+  if (!otp.expiresAt || new Date(otp.expiresAt).getTime() < Date.now()) {
+    this.clearLoginOtp();
+    return { ok: false, reason: "expired" };
+  }
+
+  if ((otp.attempts || 0) >= LOGIN_OTP_MAX_ATTEMPTS) {
+    this.clearLoginOtp();
+    return { ok: false, reason: "locked" };
+  }
+
+  const matches = await bcrypt.compare(String(submitted), otp.codeHash);
+
+  if (!matches) {
+    otp.attempts = (otp.attempts || 0) + 1;
+    if (otp.attempts >= LOGIN_OTP_MAX_ATTEMPTS) {
+      this.clearLoginOtp();
+      return { ok: false, reason: "locked", attemptsRemaining: 0 };
+    }
+    return {
+      ok: false,
+      reason: "mismatch",
+      attemptsRemaining: LOGIN_OTP_MAX_ATTEMPTS - otp.attempts,
+    };
+  }
+
+  return { ok: true };
+};
+
+/**
+ * Destroy the stored OTP. Send-throttle state (lastSentAt/sendCount/
+ * windowStartedAt) is deliberately PRESERVED -- clearing it would let a
+ * caller reset their own rate limit just by burning an OTP.
+ */
+patientSchema.methods.clearLoginOtp = function () {
+  const prev = this.loginOtp || {};
+  this.loginOtp = {
+    codeHash: undefined,
+    expiresAt: undefined,
+    attempts: 0,
+    lastSentAt: prev.lastSentAt,
+    sendCount: prev.sendCount,
+    windowStartedAt: prev.windowStartedAt,
+  };
 };
 
 // ============ STATICS ============

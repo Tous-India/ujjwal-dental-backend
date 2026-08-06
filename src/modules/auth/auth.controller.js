@@ -5,6 +5,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import User from "../users/user.model.js";
 import Patient from "../patients/patient.model.js";
 import { sendEmail, sendOtpEmail } from "../../utils/email.js";
+import { fireWhatsApp } from "../../utils/whatsapp.js";
 
 /**
  * AUTH CONTROLLER
@@ -571,6 +572,147 @@ export const patientLoginPassword = asyncHandler(async (req, res) => {
  * @route   POST /api/auth/patient/resend-otp
  * @access  Public
  */
+// ===========================================
+// PATIENT AUTHENTICATION (WHATSAPP OTP)
+// ===========================================
+
+/**
+ * Identical success payload for every request-otp call.
+ *
+ * Returned whether or not the phone belongs to a registered patient, and
+ * whether or not a send actually happened. Anything that varied by existence
+ * -- status code, message, or response time -- would turn this endpoint into a
+ * "is this number a patient here?" oracle against real medical records.
+ */
+const OTP_REQUEST_GENERIC = "If that number is registered, a login code has been sent to it on WhatsApp.";
+
+/**
+ * @desc    Request a WhatsApp login OTP
+ * @route   POST /api/patients/auth/request-otp
+ * @access  Public
+ */
+export const requestPatientLoginOtp = asyncHandler(async (req, res) => {
+  const { phone } = req.body || {};
+
+  const trimmed = String(phone || "").trim();
+  // Format validation is safe to report -- it reveals nothing about who is
+  // registered, only that the input wasn't a phone number at all.
+  if (!/^[6-9]\d{9}$/.test(trimmed)) {
+    return ApiResponse.error(res, "Please enter a valid 10-digit phone number", 400);
+  }
+
+  const patient = await Patient.findOne({ phone: trimmed }).select(
+    "+loginOtp.codeHash +loginOtp.expiresAt +loginOtp.attempts +loginOtp.lastSentAt +loginOtp.sendCount +loginOtp.windowStartedAt"
+  );
+
+  // Unregistered, or deactivated: same generic success, nothing sent.
+  if (!patient || !patient.isActive) {
+    if (patient && !patient.isActive) {
+      console.warn(`[Patient OTP] Blocked - deactivated account (id: ${patient._id})`);
+    }
+    return ApiResponse.success(res, { otpSent: true }, OTP_REQUEST_GENERIC);
+  }
+
+  // Rate limiting. This IS surfaced to the caller, deliberately: a genuine
+  // patient tapping "Resend" needs to know to wait. It only ever reveals that
+  // *someone* recently requested a code for this number -- which an attacker
+  // could equally cause themselves -- and never confirms registration, since
+  // an unregistered number returns the generic success above before reaching
+  // this point.
+  const gate = patient.canSendLoginOtp();
+  if (!gate.allowed) {
+    const message =
+      gate.reason === "cooldown"
+        ? `Please wait ${gate.retryAfterSec} second${gate.retryAfterSec === 1 ? "" : "s"} before requesting another code.`
+        : "Too many code requests. Please try again later, or log in with your password.";
+    return ApiResponse.error(res, message, 429, { retryAfterSec: gate.retryAfterSec });
+  }
+
+  const code = await patient.generateLoginOtp();
+  await patient.save();
+
+  // Fire-and-forget, matching every other dispatch in the app -- a WhatsApp
+  // outage must never block or fail a login request.
+  fireWhatsApp(patient.phone, "patient_login_otp", { otp: code }, patient.name);
+
+  return ApiResponse.success(res, { otpSent: true }, OTP_REQUEST_GENERIC);
+});
+
+/**
+ * @desc    Verify a WhatsApp login OTP and issue a patient session
+ * @route   POST /api/patients/auth/verify-otp
+ * @access  Public
+ */
+export const verifyPatientLoginOtp = asyncHandler(async (req, res) => {
+  const { phone, otp } = req.body || {};
+
+  const trimmed = String(phone || "").trim();
+  const submitted = String(otp || "").trim();
+
+  if (!trimmed || !submitted) {
+    return ApiResponse.error(res, "Please provide your phone number and the code", 400);
+  }
+
+  const patient = await Patient.findOne({ phone: trimmed }).select(
+    "+loginOtp.codeHash +loginOtp.expiresAt +loginOtp.attempts +loginOtp.lastSentAt +loginOtp.sendCount +loginOtp.windowStartedAt"
+  );
+
+  // Same generic failure for unknown/inactive/no-code-outstanding -- never
+  // distinguishes "wrong code" from "no such patient".
+  const GENERIC_INVALID = "That code is invalid or has expired. Please request a new one.";
+
+  if (!patient || !patient.isActive) {
+    return ApiResponse.error(res, GENERIC_INVALID, 400);
+  }
+
+  const result = await patient.verifyLoginOtp(submitted);
+
+  if (!result.ok) {
+    // Persist attempts/lock state -- verifyLoginOtp mutates but never saves.
+    await patient.save();
+
+    if (result.reason === "locked") {
+      return ApiResponse.error(
+        res,
+        "Too many incorrect attempts. That code is no longer valid -- please request a new one.",
+        400
+      );
+    }
+    if (result.reason === "mismatch") {
+      return ApiResponse.error(
+        res,
+        `Incorrect code. ${result.attemptsRemaining} attempt${result.attemptsRemaining === 1 ? "" : "s"} remaining.`,
+        400,
+        { attemptsRemaining: result.attemptsRemaining }
+      );
+    }
+    return ApiResponse.error(res, GENERIC_INVALID, 400);
+  }
+
+  // Single-use: destroy the code immediately on success.
+  patient.clearLoginOtp();
+  await patient.save();
+
+  // SAME token generation + cookie as the password login, so everything
+  // downstream (patientProtect, the portal, refresh) is unchanged.
+  const token = generateToken({
+    id: patient._id,
+    type: "patient",
+  });
+
+  res.cookie("patient_token", token, COOKIE_OPTIONS);
+
+  const patientData = {
+    _id: patient._id,
+    name: patient.name,
+    phone: patient.phone,
+    email: patient.email,
+    hasMembership: patient.hasMembership,
+  };
+
+  return ApiResponse.success(res, { patient: patientData, token }, "Logged in successfully");
+});
+
 export const resendOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
 

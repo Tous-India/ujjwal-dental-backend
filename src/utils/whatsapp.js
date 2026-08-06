@@ -84,6 +84,10 @@ export const TEMPLATE_NAME_MAP = {
   // lines is the ONLY edit required anywhere in the codebase.
   appointment_booked_free: "appointment_booked_free",
   session_booked_free: "session_booked_free",
+  // AUTHENTICATION-category template, 1 variable = the 6-digit login code.
+  // Submitted to Tous Connect in parallel with this build -- until Meta
+  // approves it, real sends return the usual clean 502.
+  patient_login_otp: "patient_login_otp",
 };
 
 // WhatsApp template body parameters must be non-empty strings.
@@ -147,6 +151,10 @@ const buildBodyParams = (templateType, phone, data) => {
         textParam(data.date),
         textParam(data.time),
       ];
+    // AUTHENTICATION category -- exactly one variable, the 6-digit code.
+    // Never log or persist this value; it is a credential.
+    case "patient_login_otp":
+      return [textParam(data.otp)];
     case "report_shared":
       return [textParam(data.reportTitle || "your report")];
     case "payment_link":
@@ -211,7 +219,10 @@ export async function sendWhatsApp(phone, templateType, data = {}, patientName) 
   const contactName = patientName || phone;
 
   if (!WHATSAPP_ENABLED) {
-    console.log(`[WhatsApp STUB] Would send "${templateType}" to ${phone} (contact_name: ${contactName}):`, data);
+    // Never log the OTP itself -- it is a login credential, and stub mode is
+    // exactly where it would otherwise end up in plaintext in server logs.
+    const safeData = "otp" in (data || {}) ? { ...data, otp: "[REDACTED]" } : data;
+    console.log(`[WhatsApp STUB] Would send "${templateType}" to ${phone} (contact_name: ${contactName}):`, safeData);
     return { success: true, stubbed: true };
   }
 
