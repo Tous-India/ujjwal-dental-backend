@@ -168,6 +168,20 @@ const buildBodyParams = (templateType, phone, data) => {
   }
 };
 
+/**
+ * Templates registered under Meta's AUTHENTICATION category.
+ *
+ * These are NOT shaped like the utility templates everything else here uses.
+ * Meta auto-attaches a button to every authentication template (copy-code or
+ * one-tap autofill), and a send MUST supply that button's parameter carrying
+ * the SAME code as the body -- a body-only payload is rejected, even when the
+ * template itself is approved and the template name matches exactly.
+ *
+ * That is precisely the failure mode reported: the code fires, the template is
+ * approved, and nothing arrives.
+ */
+const AUTHENTICATION_TEMPLATES = new Set(["patient_login_otp"]);
+
 const buildComponents = (templateType, phone, data) => {
   const bodyParams = buildBodyParams(templateType, phone, data);
 
@@ -178,6 +192,19 @@ const buildComponents = (templateType, phone, data) => {
   const components = bodyParams.length
     ? [{ type: "body", parameters: bodyParams }]
     : [];
+
+  // AUTHENTICATION-category templates need the code repeated in the button
+  // component Meta attaches automatically. index "0" = the first (only)
+  // button; sub_type "url" is the shape Meta documents for authentication
+  // templates, covering both copy-code and one-tap autofill variants.
+  if (AUTHENTICATION_TEMPLATES.has(templateType) && data.otp) {
+    components.push({
+      type: "button",
+      sub_type: "url",
+      index: "0",
+      parameters: [textParam(data.otp)],
+    });
+  }
 
   // Media-template case: report_shared attaches the real report file as a
   // document header, per Tous Connect's docs.

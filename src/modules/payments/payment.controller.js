@@ -15,6 +15,7 @@ import mongoose from "mongoose";
 import { parseIstDateRange } from "../../utils/istDateRange.js";
 import crypto from "crypto";
 import PDFDocument from "pdfkit";
+import { describeInvoice, pickPaymentDescription } from "../../utils/paymentDescription.js";
 
 /**
  * PAYMENT CONTROLLER
@@ -540,7 +541,11 @@ export const createPayment = asyncHandler(async (req, res) => {
 
   fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
     amount,
-    description: notes || (populatedPayment.invoice ? "Invoice payment" : "Advance payment"),
+    description: pickPaymentDescription(
+      notes,
+      describeInvoice(populatedPayment.invoice),
+      populatedPayment.invoice ? undefined : "Advance payment"
+    ),
     invoiceNumber: populatedPayment.invoice?.invoiceNumber,
   }, populatedPayment.patient?.name);
 
@@ -1002,7 +1007,7 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
 
     fireWhatsApp(populatedPayment.patient?.phone, "payment_recorded", {
       amount: payment.amount,
-      description: payment.treatmentName || payment.notes || "Payment",
+      description: pickPaymentDescription(payment.treatmentName, payment.notes),
       invoiceNumber: populatedPayment.invoice?.invoiceNumber,
     }, populatedPayment.patient?.name);
   }
@@ -1214,7 +1219,7 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
           const payer = await Patient.findById(invoice.patient).select("phone name");
           fireWhatsApp(payer?.phone, "payment_recorded", {
             amount: applyAmount,
-            description: invoice.items?.[0]?.description || "Payment",
+            description: describeInvoice(invoice),
             invoiceNumber: invoice.invoiceNumber,
           }, payer?.name);
         } catch (err) {
@@ -1816,7 +1821,7 @@ export const recordAdminPayment = asyncHandler(async (req, res) => {
   fireWhatsApp(patient.phone, "payment_recorded", {
     amount: numAmount,
     description: settledInvoices.length === 1
-      ? `Invoice ${settledInvoices[0].invoiceNumber}`
+      ? describeInvoice(settledInvoices[0])
       : `${settledInvoices.length} invoices`,
     invoiceNumber: settledInvoices[0]?.invoiceNumber,
   }, patient.name);
@@ -2051,7 +2056,7 @@ export const collectPayment = asyncHandler(async (req, res) => {
       const payer = await Patient.findById(invoice.patient).select("phone name");
       fireWhatsApp(payer?.phone, "payment_recorded", {
         amount: numAmount,
-        description: notes || `Invoice ${invoice.invoiceNumber}`,
+        description: pickPaymentDescription(notes, describeInvoice(invoice)),
         invoiceNumber: invoice.invoiceNumber,
       }, payer?.name);
     } catch (err) {
@@ -2260,7 +2265,7 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
 
     fireWhatsApp(req.patient?.phone, "payment_recorded", {
       amount: verifiedAmount,
-      description: `Invoice ${invoice.invoiceNumber}`,
+      description: describeInvoice(invoice),
       invoiceNumber: invoice.invoiceNumber,
     }, req.patient?.name);
   } else {

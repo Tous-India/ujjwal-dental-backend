@@ -7,6 +7,7 @@ import mongoose from "mongoose";
 import PDFDocument from "pdfkit";
 import { parseIstDateRange } from "../../utils/istDateRange.js";
 import { fireWhatsApp } from "../../utils/whatsapp.js";
+import { describeInvoice } from "../../utils/paymentDescription.js";
 
 /**
  * BILLING CONTROLLER
@@ -890,7 +891,9 @@ export const recordPayment = asyncHandler(async (req, res) => {
 
   fireWhatsApp(updatedInvoice?.patient?.phone, "payment_recorded", {
     amount,
-    description: `Invoice ${updatedInvoice?.invoiceNumber || ""}`.trim(),
+    // What the payment was FOR, from the invoice's own line items -- never
+    // the invoice number, which {{3}} already carries.
+    description: describeInvoice(updatedInvoice),
     invoiceNumber: updatedInvoice?.invoiceNumber,
   }, updatedInvoice?.patient?.name);
 
