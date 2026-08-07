@@ -16,6 +16,10 @@ import { parseIstDateRange } from "../../utils/istDateRange.js";
 import crypto from "crypto";
 import PDFDocument from "pdfkit";
 import { describeInvoice, pickPaymentDescription } from "../../utils/paymentDescription.js";
+import {
+  reconcilePaidPaymentLink,
+  fetchRazorpayPaymentLink,
+} from "../../utils/reconcilePaymentLink.js";
 
 /**
  * PAYMENT CONTROLLER
@@ -1018,6 +1022,121 @@ export const verifyRazorpayPayment = asyncHandler(async (req, res) => {
  * @route   POST /api/payments/razorpay/webhook
  * @access  Public (Razorpay server)
  */
+/**
+ * @desc    Verify a Razorpay payment link's REAL status and reconcile if paid
+ * @route   POST /api/payments/verify-razorpay-link/:invoiceId
+ * @access  Admin / clinic_manager (checkPermission payments:edit)
+ *
+ * The safety net for a missed webhook. A real one happened: payment_link.paid
+ * was not enabled on the Razorpay webhook, so a patient paid and the CRM
+ * showed the invoice unpaid indefinitely. Webhooks can also fail for network
+ * reasons, downtime, or signature problems -- so when a patient says "I
+ * already paid", admin can ask Razorpay directly instead of taking their word
+ * or hunting through a dashboard.
+ *
+ * Never trusts our own stored state about whether the link was paid: it asks
+ * Razorpay, and reconciles ONLY if Razorpay says "paid". Reconciliation runs
+ * through the same shared function the webhook uses, so a manually-verified
+ * payment is indistinguishable from a webhook-reconciled one.
+ */
+export const verifyRazorpayPaymentLink = asyncHandler(async (req, res) => {
+  const { invoiceId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(invoiceId)) {
+    return ApiResponse.error(res, "Invalid invoice ID", 400);
+  }
+
+  const invoice = await Invoice.findById(invoiceId);
+  if (!invoice) {
+    return ApiResponse.error(res, "Invoice not found", 404);
+  }
+
+  const linkId = invoice.paymentLink?.id;
+  if (!linkId) {
+    return ApiResponse.error(
+      res,
+      "No Razorpay payment link was generated for this invoice, so there is nothing to verify.",
+      400
+    );
+  }
+
+  // Fast path: if a Payment already exists for this link, report that WITHOUT
+  // calling Razorpay or touching anything. This is the idempotency case an
+  // admin hits by clicking Verify after the webhook already worked.
+  const existingPayment = await Payment.findOne({ razorpayPaymentLinkId: linkId });
+  if (existingPayment || invoice.paymentLink?.status === "paid") {
+    return ApiResponse.success(
+      res,
+      {
+        outcome: "already_reconciled",
+        razorpayStatus: invoice.paymentLink?.status || "paid",
+        invoice,
+        payment: existingPayment || null,
+      },
+      "This payment was already recorded — no action taken."
+    );
+  }
+
+  let link;
+  try {
+    link = await fetchRazorpayPaymentLink(linkId);
+  } catch (err) {
+    return ApiResponse.error(
+      res,
+      `Could not reach Razorpay to verify this payment: ${err.message}`,
+      err.statusCode || 502
+    );
+  }
+
+  // Razorpay's own vocabulary: created | partially_paid | paid | cancelled | expired
+  if (link.status !== "paid") {
+    return ApiResponse.success(
+      res,
+      { outcome: "not_paid", razorpayStatus: link.status, amountPaid: (link.amount_paid || 0) / 100 },
+      `Razorpay shows this link as "${link.status}" — no payment has been received, so nothing was changed.`
+    );
+  }
+
+  // Genuinely paid but unrecorded: reconcile via the SAME path the webhook uses.
+  // reference_id may carry the per-session appointment (invoiceId:appointmentId).
+  let sessionAppointmentId = null;
+  if (link.reference_id) {
+    const [, refAppointmentId] = String(link.reference_id).split(":");
+    if (refAppointmentId && mongoose.Types.ObjectId.isValid(refAppointmentId)) {
+      sessionAppointmentId = refAppointmentId;
+    }
+  }
+
+  const result = await reconcilePaidPaymentLink({
+    invoice,
+    linkEntity: link,
+    paidPaymentEntity: null, // the underlying payment id isn't in this response
+    sessionAppointmentId,
+    source: "manual-verify",
+  });
+
+  if (result.alreadyReconciled) {
+    return ApiResponse.success(
+      res,
+      { outcome: "already_reconciled", razorpayStatus: link.status, payment: result.payment || null },
+      "This payment was already recorded — no action taken."
+    );
+  }
+
+  const fresh = await Invoice.findById(invoiceId);
+  return ApiResponse.success(
+    res,
+    {
+      outcome: "reconciled",
+      razorpayStatus: link.status,
+      appliedAmount: result.appliedAmount,
+      payment: result.payment,
+      invoice: fresh,
+    },
+    `Payment verified with Razorpay and recorded (₹${result.appliedAmount}).`
+  );
+});
+
 export const razorpayWebhook = asyncHandler(async (req, res) => {
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
@@ -1147,85 +1266,25 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
         break;
       }
 
-      // Idempotency -- Razorpay may retry webhook delivery; never double-apply.
-      if (invoice.paymentLink?.status === "paid") {
-        console.log(`[Webhook] payment_link.paid already processed for invoice ${invoice.invoiceNumber}`);
-        break;
-      }
-
-      const capturedAmount = Math.max(0, Number(linkEntity.amount_paid ?? linkEntity.amount ?? 0) / 100);
-      const previousAmountPaid = invoice.amountPaid || 0;
-      const applyAmount = capturedAmount > 0 ? capturedAmount : Math.max(0, invoice.grandTotal - previousAmountPaid);
-
-      invoice.amountPaid = previousAmountPaid + applyAmount;
-      invoice.paymentLink = {
-        id: invoice.paymentLink?.id || linkEntity.id,
-        shortUrl: invoice.paymentLink?.shortUrl || linkEntity.short_url,
-        status: "paid",
-        createdAt: invoice.paymentLink?.createdAt || new Date(),
-        paidAt: new Date(),
-      };
-      await invoice.save(); // pre-save hook recalculates grandTotal/paymentStatus/balanceDue
-
-      const payment = await Payment.createSafe({
-        patient: invoice.patient,
-        clinic: invoice.clinic,
-        // A per-session collection (see referenceAppointmentId above) links the
-        // Payment to that SPECIFIC session appointment, not the parent
-        // invoice.appointment -- otherwise TreatmentPlanDetailModal's
-        // per-session "collected" total would double-count into the wrong
-        // session (or the parent), exactly the "not cumulative" requirement.
-        appointment: sessionAppointmentId || invoice.appointment,
-        amount: applyAmount,
-        paymentMode: "razorpay",
-        type: invoice.items?.[0]?.itemType === "opd_fee" ? "opd_fee" : "treatment",
-        status: "paid",
-        paidAt: new Date(),
-        razorpayPaymentId: paidPaymentEntity?.id,
-        razorpayPaymentLinkId: linkEntity.id,
-        razorpayDetails: paidPaymentEntity
-          ? { method: paidPaymentEntity.method, bank: paidPaymentEntity.bank, wallet: paidPaymentEntity.wallet, vpa: paidPaymentEntity.vpa }
-          : undefined,
-        notes: `Paid via Razorpay Payment Link (${linkEntity.id})`,
-        settledInvoices: [
-          {
-            invoiceId: invoice._id,
-            invoiceNumber: invoice.invoiceNumber,
-            appliedAmount: applyAmount,
-            previousAmountPaid,
-          },
-        ],
+      // Reconciliation -- applying the money, creating the Payment, syncing
+      // the appointment and notifying -- lives in ONE shared function used by
+      // BOTH this webhook and the manual Verify Payment endpoint, so the two
+      // paths can never drift into applying money differently. It is
+      // idempotent: a webhook and a manual verify racing on the same link
+      // still produce exactly one Payment.
+      const result = await reconcilePaidPaymentLink({
+        invoice,
+        linkEntity,
+        paidPaymentEntity,
+        sessionAppointmentId,
+        source: "webhook",
       });
 
-      // Keep the appointment's denormalized payment state in sync, if linked.
-      if (invoice.appointment) {
-        const linkedAppointment = await Appointment.findById(invoice.appointment);
-        if (linkedAppointment) {
-          linkedAppointment.opdFeePaid = true;
-          if (invoice.paymentStatus === "paid") linkedAppointment.paymentStatus = "paid";
-          linkedAppointment.paymentLinkStatus = "paid";
-          await linkedAppointment.save();
-        }
+      if (result.alreadyReconciled) {
+        console.log(
+          `[Webhook] payment_link.paid already reconciled for invoice ${invoice.invoiceNumber} (${result.reason})`
+        );
       }
-
-      console.log(
-        `[Webhook] payment_link.paid processed for invoice ${invoice.invoiceNumber}, payment ${payment.paymentNumber}, amount ₹${applyAmount}`
-      );
-
-      // Fire-and-forget notification -- mirrors every other payment-recorded
-      // notify call site in this file.
-      (async () => {
-        try {
-          const payer = await Patient.findById(invoice.patient).select("phone name");
-          fireWhatsApp(payer?.phone, "payment_recorded", {
-            amount: applyAmount,
-            description: describeInvoice(invoice),
-            invoiceNumber: invoice.invoiceNumber,
-          }, payer?.name);
-        } catch (err) {
-          console.error("[Webhook] payment_recorded notify lookup failed:", err.message);
-        }
-      })();
 
       break;
     }

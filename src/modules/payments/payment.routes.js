@@ -62,6 +62,15 @@ router.post("/razorpay/verify", optionalAuth, paymentController.verifyRazorpayPa
 // Razorpay webhook (for async payment updates) - No auth, verified by signature
 router.post("/razorpay/webhook", paymentController.razorpayWebhook);
 
+// Manual safety net for a missed webhook: ask Razorpay for a payment link's
+// REAL status and reconcile the invoice if it is genuinely paid. Idempotent.
+router.post(
+  "/verify-razorpay-link/:invoiceId",
+  authProtect,
+  checkPermission("payments", "edit"),
+  paymentController.verifyRazorpayPaymentLink
+);
+
 // ==================== DELETE ====================
 
 // Permanently delete a payment - Admin
