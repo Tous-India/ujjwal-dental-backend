@@ -5,7 +5,9 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import User from "../users/user.model.js";
 import Patient from "../patients/patient.model.js";
 import { sendEmail } from "../../utils/email.js";
-import { fireWhatsApp } from "../../utils/whatsapp.js";
+// sendWhatsApp (awaited), not fireWhatsApp -- see requestPatientLoginOtp for
+// why an OTP is the one dispatch that must not be fire-and-forget here.
+import { sendWhatsApp } from "../../utils/whatsapp.js";
 
 /**
  * AUTH CONTROLLER
@@ -573,9 +575,45 @@ export const requestPatientLoginOtp = asyncHandler(async (req, res) => {
   const code = await patient.generateLoginOtp();
   await patient.save();
 
-  // Fire-and-forget, matching every other dispatch in the app -- a WhatsApp
-  // outage must never block or fail a login request.
-  fireWhatsApp(patient.phone, "patient_login_otp", { otp: code }, patient.name);
+  /**
+   * AWAITED, unlike every other notification in this app -- deliberately.
+   *
+   * Fire-and-forget is correct for booking confirmations and receipts: they
+   * are informational, so a slow send should never delay the response. It is
+   * WRONG here, and measurably so.
+   *
+   * This API runs as a Vercel serverless function. Once the response is sent,
+   * the instance is frozen -- any in-flight work stops executing and only
+   * resumes if/when that instance is thawed by a later invocation. Measured
+   * against the real Tous Connect API, an OTP send takes ~3.8-4.8 SECONDS to
+   * acknowledge, while the rest of this handler completes in ~160ms. So
+   * fire-and-forget returned the response ~4 seconds before the send
+   * finished, leaving it to be frozen mid-flight and completed only on the
+   * next invocation -- which, on a low-traffic clinic backend, is exactly the
+   * kind of multi-minute gap a patient reported (requested 2:39, arrived
+   * 2:41).
+   *
+   * An OTP that arrives after the user has given up is worthless, so ~4s of
+   * latency is the right trade for actually delivering it. sendWhatsApp never
+   * throws (it catches internally and returns {success:false,...}), so this
+   * cannot fail the login request -- the patient still gets the same generic
+   * response either way.
+   */
+  const sendResult = await sendWhatsApp(
+    patient.phone,
+    "patient_login_otp",
+    { otp: code },
+    patient.name
+  );
+
+  if (!sendResult?.success) {
+    // Logged for diagnosis only -- never surfaced, since the response must stay
+    // identical for registered and unregistered numbers (no enumeration).
+    console.error(
+      `[Patient OTP] Send failed for patient ${patient._id}:`,
+      sendResult?.error || sendResult
+    );
+  }
 
   return ApiResponse.success(res, { otpSent: true }, OTP_REQUEST_GENERIC);
 });

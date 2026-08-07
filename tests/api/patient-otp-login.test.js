@@ -249,6 +249,56 @@ describe("Patient WhatsApp OTP login", () => {
     expect(known.body.message).toContain("+91-9467776028");
   });
 
+  it("the OTP send is AWAITED, not fire-and-forget -- the send must finish before the response is sent", async () => {
+    // Why this matters: on Vercel the instance is FROZEN once the response is
+    // sent, so an unawaited send is left in flight and only resumes when the
+    // instance is next thawed. A real Tous Connect send measures ~3.8-4.8s
+    // while the rest of the handler takes ~160ms, so fire-and-forget returned
+    // roughly 4 seconds before the send completed -- the mechanism behind a
+    // patient requesting an OTP at 2:39 and receiving it at 2:41.
+    //
+    // Proven by making the send artificially slow: if it is awaited, the
+    // response cannot come back faster than the send.
+    const DELAY_MS = 400;
+    const whatsapp = await import("../../src/utils/whatsapp.js");
+    const spy = vi
+      .spyOn(whatsapp, "sendWhatsApp")
+      .mockImplementation(
+        () => new Promise((r) => setTimeout(() => r({ success: true }), DELAY_MS))
+      );
+
+    try {
+      const started = Date.now();
+      const res = await requestOtp();
+      const elapsed = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toBe("patient_login_otp");
+
+      // The response waited for the send. Fire-and-forget would return in ~ms.
+      expect(elapsed).toBeGreaterThanOrEqual(DELAY_MS);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a FAILED send still returns the same generic response (no enumeration, no 500)", async () => {
+    const whatsapp = await import("../../src/utils/whatsapp.js");
+    const spy = vi
+      .spyOn(whatsapp, "sendWhatsApp")
+      .mockResolvedValue({ success: false, status: 502, error: "template not approved" });
+
+    try {
+      const res = await requestOtp();
+      // Awaiting the send must NOT let a send failure break login.
+      expect(res.status).toBe(200);
+      expect(res.body.message).toContain("If this number is registered with us");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("the RETIRED email-OTP endpoints answer 410 Gone, not 404 or a working login", async () => {
     for (const path of [
       "/api/auth/patient/login",
