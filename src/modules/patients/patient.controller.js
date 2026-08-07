@@ -45,12 +45,30 @@ function buildPatientQuery({ search, isActive, hasMembership, membership }) {
   const conditions = [];
 
   // Filter by active status.
-  // Default to active-only so soft-deleted (deactivated) patients drop out of
-  // the working list; pass ?isActive=false explicitly to view inactive ones.
-  if (isActive !== undefined) {
-    query.isActive = isActive === "true";
-  } else {
+  //
+  //   isActive=all    -> NO condition (genuinely everyone)
+  //   isActive=true   -> active only
+  //   isActive=false  -> inactive only
+  //   absent/empty    -> active only (the safe default)
+  //
+  // "all" must be an EXPLICIT value. Previously there was no way to express it:
+  // an absent param fell through to a hardcoded isActive:true, and any value
+  // that wasn't the literal "true" was coerced to false. So the Patients page's
+  // "All" option (which sends isActive=all) evaluated "all" === "true" -> false
+  // and filtered to inactive-only, while an absent param silently gave
+  // active-only. Either way "All" never meant all.
+  //
+  // The absent-param default stays active-only deliberately: AddReportModal's
+  // patient dropdown calls this endpoint with no isActive param and must not
+  // start offering deactivated patients. (The booking/payment/invoice/lab
+  // search boxes use the separate searchPatients endpoint, which has its own
+  // isActive:true and is unaffected by anything here.)
+  if (isActive === "all") {
+    // no isActive condition at all
+  } else if (isActive === undefined || isActive === "") {
     query.isActive = true;
+  } else {
+    query.isActive = isActive === "true";
   }
 
   // Search by name, phone, or email
