@@ -1915,6 +1915,74 @@ export const updateAppointment = asyncHandler(async (req, res) => {
   }
 
   /* =======================
+     MISSING-INVOICE BACKFILL ON EDIT
+     Invoice generation used to exist ONLY on the create path. An appointment
+     booked FREE (or otherwise created without an invoice) and later edited to
+     a real fee kept its fee change but never got an invoice -- so Billing had
+     nothing to list and Collect Payment had nothing to work against. A real
+     Rs200 appointment hit exactly this.
+  ======================== */
+  let editInvoiceFailure = null;
+
+  const nowChargeable =
+    !appointment.isFree &&
+    appointment.visitType !== "treatment_session" &&
+    Number(appointment.fee ?? appointment.opdFee ?? 0) > 0;
+
+  if (invoiceNeedsSync && !appointment.invoice && nowChargeable) {
+    const chargeableFee = Number(appointment.fee ?? appointment.opdFee ?? 0);
+    try {
+      // Same service the create path uses -- NOT a reimplementation, so line
+      // items, membership discount and totals are computed identically. The
+      // fee comes from the appointment's own (edited) value, never a clinic
+      // default.
+      const backfilled = await generateInvoice({
+        patient: appointment.patient,
+        clinic: appointment.clinic,
+        appointment: appointment._id,
+        items: [
+          {
+            itemType: appointment.visitType === "treatment" ? "treatment" : "opd_fee",
+            description:
+              appointment.visitType === "treatment"
+                ? appointment.treatmentName || "Treatment"
+                : "OPD Consultation",
+            unitPrice: chargeableFee,
+          },
+        ],
+        amountPaid: 0,
+        paymentMethod: appointment.opdFeePaid
+          ? (["cash", "card", "upi", "razorpay"].includes(appointment.paymentMethod)
+              ? appointment.paymentMethod
+              : "cash")
+          : "pay-at-clinic",
+        createdBy: req.user?._id,
+      });
+
+      appointment.invoice = backfilled._id;
+      // A previous failed attempt must not keep flagging the appointment.
+      appointment.invoiceError = { message: null, failedAt: null };
+      await appointment.save();
+
+      console.log(
+        `[updateAppointment] Backfilled missing invoice ${backfilled.invoiceNumber} (₹${chargeableFee}) for ${appointment.appointmentNumber}`
+      );
+    } catch (err) {
+      // Never swallow -- same contract as the create path (see createAppointment).
+      console.error("[updateAppointment] Invoice backfill failed:", err.message);
+      editInvoiceFailure = { message: err.message, failedAt: new Date() };
+      try {
+        await Appointment.updateOne(
+          { _id: appointment._id },
+          { $set: { invoiceError: editInvoiceFailure } }
+        );
+      } catch (persistErr) {
+        console.error("[updateAppointment] Could not persist invoiceError:", persistErr?.message);
+      }
+    }
+  }
+
+  /* =======================
      RAZORPAY LINK (RE)GENERATION
      Switching the payment method TO "razorpay" generates a FRESH link (the
      old one may be stale). Switching AWAY needs no cleanup -- any Payment
@@ -1977,6 +2045,15 @@ export const updateAppointment = asyncHandler(async (req, res) => {
 
   const responseData = updatedAppointment.toObject();
   if (paymentLinkResult) responseData.paymentLink = paymentLinkResult;
+
+  // Same contract as the create path: the edit still succeeds, but a failed
+  // invoice backfill must never read as a clean success -- without an invoice
+  // the appointment cannot be billed or collected against.
+  if (editInvoiceFailure) {
+    responseData.invoiceError = editInvoiceFailure;
+    responseData.warning =
+      "Appointment updated, but invoice generation failed — this appointment cannot be billed until an invoice is created. Please contact support.";
+  }
 
   ApiResponse.success(
     res,
