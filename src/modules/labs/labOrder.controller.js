@@ -72,10 +72,24 @@ export const getAllLabOrders = asyncHandler(async (req, res) => {
 
 /**
  * @desc    Date-range stats for the Lab Orders page: Total Spent, Undelivered,
- *          Total Orders, Overdue -- all scoped to non-archived orders whose
- *          orderDate falls in [from, to], same range semantics as getAllLabOrders.
+ *          Total Orders, Overdue.
  * @route   GET /api/lab-orders/stats?from=&to=
  * @access  Admin
+ *
+ * CASH BASIS for totalSpent: we sum paymentHistory[].amount where the payment
+ * date falls in [from, to] — identical to the P&L computeLabCosts function so
+ * both the Lab Orders page and the Expenses P&L card always agree.
+ *
+ * Previously this summed $totalAmount filtered by orderDate, which was wrong:
+ * (a) it included the unpaid portion of partially-paid orders and
+ * (b) it dated a payment to when the order was placed, not when cash moved.
+ *
+ * Delivery counts (Undelivered / Overdue) and Total Orders remain order-level,
+ * scoped to non-archived orders placed within the date range — those stats are
+ * naturally about "what was ordered this period," not "what was paid this period."
+ *
+ * Editorial decision on archived orders: real money spent counts regardless of
+ * archive status, so totalSpent includes archived orders' paymentHistory.
  *
  * "Undelivered" = deliveryStatus !== "delivered" (pending/in_progress/rejected
  * all count -- the enum's only true "received" terminal state is "delivered").
@@ -84,49 +98,62 @@ export const getAllLabOrders = asyncHandler(async (req, res) => {
 export const getLabOrderStats = asyncHandler(async (req, res) => {
   const { from, to } = req.query;
 
-  const dateMatch = { archived: false };
-  if (from || to) {
-    dateMatch.orderDate = parseIstDateRange(from, to);
-  }
-
   const now = new Date();
 
-  const [result] = await LabOrder.aggregate([
-    { $match: dateMatch },
-    {
-      $group: {
-        _id: null,
-        totalSpent: { $sum: "$totalAmount" },
-        totalOrders: { $sum: 1 },
-        undelivered: {
-          $sum: { $cond: [{ $ne: ["$deliveryStatus", "delivered"] }, 1, 0] },
-        },
-        overdue: {
-          $sum: {
-            $cond: [
-              {
-                $and: [
-                  { $ne: ["$deliveryStatus", "delivered"] },
-                  { $ne: ["$expectedDelivery", null] },
-                  { $lt: ["$expectedDelivery", now] },
-                ],
-              },
-              1,
-              0,
-            ],
+  // ── Order-level pipeline: counts scoped to non-archived orders placed in range ──
+  const orderMatch = { archived: false };
+  if (from || to) {
+    orderMatch.orderDate = parseIstDateRange(from, to);
+  }
+
+  // ── Cash-basis pipeline: sum payments actually made in the range ──────────────
+  // Unwind paymentHistory first, THEN filter by payment date — this is the only
+  // correct way to apply a date filter when payments can arrive on different dates
+  // from the order itself.  No archived filter here: money spent is money spent.
+  const cashPipeline = [{ $unwind: "$paymentHistory" }];
+  if (from || to) {
+    cashPipeline.push({ $match: { "paymentHistory.date": parseIstDateRange(from, to) } });
+  }
+  cashPipeline.push({ $group: { _id: null, total: { $sum: "$paymentHistory.amount" } } });
+
+  const [[orderResult], [cashResult]] = await Promise.all([
+    LabOrder.aggregate([
+      { $match: orderMatch },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          undelivered: {
+            $sum: { $cond: [{ $ne: ["$deliveryStatus", "delivered"] }, 1, 0] },
+          },
+          overdue: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$deliveryStatus", "delivered"] },
+                    { $ne: ["$expectedDelivery", null] },
+                    { $lt: ["$expectedDelivery", now] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
           },
         },
       },
-    },
+    ]),
+    LabOrder.aggregate(cashPipeline),
   ]);
 
   ApiResponse.success(
     res,
     {
-      totalSpent: result?.totalSpent || 0,
-      undelivered: result?.undelivered || 0,
-      totalOrders: result?.totalOrders || 0,
-      overdue: result?.overdue || 0,
+      totalSpent: cashResult?.total || 0,
+      undelivered: orderResult?.undelivered || 0,
+      totalOrders: orderResult?.totalOrders || 0,
+      overdue: orderResult?.overdue || 0,
     },
     "Lab order stats fetched successfully"
   );
