@@ -28,6 +28,6 @@ router.get("/", authProtect, checkPermission("expenses", "view"), expenseControl
 router.post("/", authProtect, checkPermission("expenses", "create"), expenseController.createExpense);
 router.get("/:id", authProtect, checkPermission("expenses", "view"), expenseController.getExpenseById);
 router.patch("/:id", authProtect, checkPermission("expenses", "edit"), expenseController.updateExpense);
-router.delete("/:id", authProtect, checkPermission("expenses", "delete"), expenseController.deleteExpense);
+router.post("/:id/void", authProtect, checkPermission("expenses", "delete"), expenseController.voidExpense);
 
 export default router;

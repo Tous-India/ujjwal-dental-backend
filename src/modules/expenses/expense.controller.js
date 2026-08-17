@@ -167,9 +167,17 @@ export const getExpenses = asyncHandler(async (req, res) => {
     spentBy,
     clinic,
     search,
+    voided,
   } = req.query;
 
   const query = {};
+
+  // Default: exclude voided. Pass voided=true to view only voided records.
+  if (voided === "true") {
+    query.isVoided = true;
+  } else {
+    query.isVoided = { $ne: true };
+  }
 
   if (from || to) {
     query.date = parseIstDateRange(from, to);
@@ -197,6 +205,7 @@ export const getExpenses = asyncHandler(async (req, res) => {
       .populate("spentBy", "name email role")
       .populate("recordedBy", "name email role")
       .populate("editedBy", "name email role")
+      .populate("voidedBy", "name email role")
       .populate("clinic", "name code")
       .sort({ date: -1, createdAt: -1 })
       .skip(skip)
@@ -274,31 +283,47 @@ export const updateExpense = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Hard-delete an expense
- * @route   DELETE /api/expenses/:id
+ * @desc    Void (soft-delete) an expense — mirrors the established Invoice void pattern.
+ *          Voided expenses are excluded from lists, stats, and P&L but remain
+ *          queryable via voided=true for audit purposes.
+ * @route   POST /api/expenses/:id/void
  * @access  Admin (checkPermission expenses:delete)
- *
- * ⚠️  TRADEOFF WARNING (for Sunny's awareness):
- * This is a hard delete — the document is permanently removed and cannot be
- * recovered. Because expenses feed directly into the P&L "Net Profit" figure,
- * a deleted expense silently changes ALL historical P&L reports with no audit
- * trace. The established project pattern for financial records (invoices,
- * payments) is soft-delete/void to preserve the audit trail. Hard delete is
- * implemented here as requested (expenses are internal records, not
- * patient-facing money), but consider whether a "void/archive" toggle would
- * be safer for mistake recovery — a mistakenly deleted ₹50,000 salary entry
- * changes every profit figure permanently. The frontend requires a
- * confirmation dialog before calling this endpoint.
  */
-export const deleteExpense = asyncHandler(async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+export const voidExpense = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
     return ApiResponse.error(res, "Invalid expense ID", 400);
   }
 
-  const expense = await Expense.findByIdAndDelete(req.params.id);
-  if (!expense) return ApiResponse.error(res, "Expense not found", 404);
+  const { reason } = req.body;
+  if (!reason || reason.trim().length < 10) {
+    return ApiResponse.error(res, "A reason of at least 10 characters is required", 400);
+  }
 
-  ApiResponse.success(res, { deletedId: req.params.id }, "Expense deleted");
+  const expense = await Expense.findById(id);
+  if (!expense) return ApiResponse.error(res, "Expense not found", 404);
+  if (expense.isVoided) return ApiResponse.error(res, "Expense is already voided", 400);
+
+  await Expense.updateOne(
+    { _id: id },
+    {
+      $set: {
+        isVoided: true,
+        voidedAt: new Date(),
+        voidedBy: req.user?._id || null,
+        voidReason: reason.trim(),
+      },
+    }
+  );
+
+  const updated = await Expense.findById(id)
+    .populate("spentBy", "name email role")
+    .populate("recordedBy", "name email role")
+    .populate("voidedBy", "name email role")
+    .populate("clinic", "name code")
+    .lean();
+
+  ApiResponse.success(res, { expense: updated }, "Expense voided successfully");
 });
 
 /**
@@ -309,7 +334,7 @@ export const deleteExpense = asyncHandler(async (req, res) => {
 export const getExpenseStats = asyncHandler(async (req, res) => {
   const { from, to, category, clinic } = req.query;
 
-  const match = {};
+  const match = { isVoided: { $ne: true } };
   if (from || to) match.date = parseIstDateRange(from, to);
   if (category) match.category = category;
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
@@ -392,8 +417,8 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
     computeLabCosts({ from, to }),
   ]);
 
-  // Expenses from Expense collection, grouped by category
-  const expenseMatch = {};
+  // Expenses from Expense collection, grouped by category — exclude voided
+  const expenseMatch = { isVoided: { $ne: true } };
   if (from || to) expenseMatch.date = parseIstDateRange(from, to);
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
     expenseMatch.clinic = new mongoose.Types.ObjectId(clinic);
@@ -454,7 +479,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
       computeLabCosts({ from: prevRange.from, to: prevRange.to }),
     ]);
 
-    const prevExpenseMatch = { date: parseIstDateRange(prevRange.from, prevRange.to) };
+    const prevExpenseMatch = { isVoided: { $ne: true }, date: parseIstDateRange(prevRange.from, prevRange.to) };
     if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
       prevExpenseMatch.clinic = new mongoose.Types.ObjectId(clinic);
     }

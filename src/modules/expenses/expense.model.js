@@ -62,6 +62,24 @@ const expenseSchema = new mongoose.Schema(
     editedAt: {
       type: Date,
     },
+    // Soft-delete / void — mirrors the established Invoice void pattern.
+    // Voided expenses are excluded from all lists, stats, and P&L by default;
+    // they remain fully queryable via the voided=true filter for audit.
+    isVoided: {
+      type: Boolean,
+      default: false,
+    },
+    voidedAt: {
+      type: Date,
+    },
+    voidedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    voidReason: {
+      type: String,
+      trim: true,
+    },
   },
   { timestamps: true }
 );
