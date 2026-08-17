@@ -22,6 +22,7 @@ import enquiryRoutes from "./modules/enquiries/enquiry.routes.js";
 import treatmentPageRoutes from "./modules/cms/treatmentPage.routes.js";
 import blogRoutes from "./modules/blogs/blog.routes.js";
 import permissionRoutes from "./modules/permissions/permission.routes.js";
+import expenseRoutes from "./modules/expenses/expense.routes.js";
 import { optionalAuth } from "./middlewares/auth.middleware.js";
 
 const router = Router();
@@ -270,6 +271,17 @@ router.use("/blogs", blogRoutes);
 // Phase 1 of the Permission Manager -- new plumbing only, not yet wired into
 // any existing route's access control.
 router.use("/permissions", permissionRoutes);
+
+// ========== EXPENSES ==========
+// GET    /api/expenses                 - List expenses (with filters)
+// POST   /api/expenses                 - Record new expense
+// GET    /api/expenses/stats           - Summary cards for current filter
+// GET    /api/expenses/pnl             - Profit & Loss report
+// GET    /api/expenses/staff           - Staff list for spentBy dropdown
+// GET    /api/expenses/:id             - Get single expense
+// PATCH  /api/expenses/:id             - Update expense (recordedBy immutable)
+// DELETE /api/expenses/:id             - Hard delete expense (confirm dialog required)
+router.use("/expenses", expenseRoutes);
 
 // ========== API INFO ==========
 router.get("/", (req, res) => {

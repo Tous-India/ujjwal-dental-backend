@@ -25,7 +25,7 @@ const seedAdmin = async () => {
       name: "Admin",
       email: "ujjwaldentalplanet.in@gmail.com",
       phone: "9999999999",
-      password: "Easylogin@1",
+      password: "Easylogin@12",
       role: "admin",
     });
 
@@ -43,5 +43,5 @@ seedAdmin();
 
 
 // mail: ujjwaldentalplanet.in@gmail.com
-// Password: Easylogin@1
+// Password: Easylogin@12
  

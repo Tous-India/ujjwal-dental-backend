@@ -40,7 +40,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.1.4",
     "multer": "^2.0.2",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^9.0.5",
     "pdfkit": "^0.17.2",
     "razorpay": "^2.9.6",
     "resend": "^6.17.2",

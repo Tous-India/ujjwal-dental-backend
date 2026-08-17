@@ -59,6 +59,7 @@ export const MODULES = [
   "lab",
   "payments",
   "billing",
+  "expenses",
   "reports",
   "memberships",
   "blogs",
@@ -98,6 +99,9 @@ export const DEFAULT_PERMISSION_MATRIX = {
     lab: allTrue,
     payments: allTrue,
     billing: { view: true, create: true, edit: true, delete: false },
+    // Expenses: staff can view and record but only admin/clinic_manager can delete
+    // to prevent silent P&L manipulation.
+    expenses: { view: true, create: true, edit: true, delete: false },
     reports: allTrue,
     memberships: allTrue,
     blogs: allFalse,
