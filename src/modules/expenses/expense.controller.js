@@ -461,26 +461,40 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
     { $sort: { total: -1 } },
   ]);
 
-  const totalOtherExpenses = expenseAgg.reduce((s, e) => s + e.total, 0);
-  const totalExpenses = labCosts + totalOtherExpenses;
-  const netProfit = netRevenue - totalExpenses;
+  // ── Lab-bucketing: category drives placement ──────────────────────────────
+  // Expense docs in range WHERE category === "lab" are counted as lab costs
+  // (alongside LabOrder paymentHistory payments). All other non-voided Expense
+  // docs go into otherExpenses. Every non-voided expense is counted exactly once.
+  const labCategoryRows    = expenseAgg.filter((e) => e._id === "lab");
+  const nonLabCategoryRows = expenseAgg.filter((e) => e._id !== "lab");
 
-  // Expense breakdown by category
-  const expenseBreakdown = expenseAgg.map((e) => ({
+  const labExpensesTotal = labCategoryRows.reduce((s, e) => s + e.total, 0);
+  const labExpensesCount = labCategoryRows.reduce((s, e) => s + e.count, 0);
+
+  // totalLabCosts = LabOrder payments in range + lab-category Expense docs in range
+  const totalLabCosts      = labCosts + labExpensesTotal;
+  const totalOtherExpenses = nonLabCategoryRows.reduce((s, e) => s + e.total, 0);
+  const totalExpenses      = totalLabCosts + totalOtherExpenses;
+  const netProfit          = netRevenue - totalExpenses;
+
+  // Expense breakdown by category — non-lab categories only; lab-category
+  // expenses are surfaced through labBreakdown (in the lab bucket).
+  const expenseBreakdown = nonLabCategoryRows.map((e) => ({
     category: e._id,
     total: e.total,
     count: e.count,
     pct: totalExpenses > 0 ? Math.round((e.total / totalExpenses) * 100) : 0,
   }));
 
-  // Lab as a category in the breakdown
-  const labBreakdown = labCosts > 0
+  // Lab breakdown entry: LabOrder payments + lab-category Expense docs combined.
+  // Shown whenever the combined lab total is non-zero.
+  const labBreakdown = totalLabCosts > 0
     ? {
         category: "lab_orders",
         label: "Lab Orders (paid)",
-        total: labCosts,
-        count: labPaymentCount,
-        pct: totalExpenses > 0 ? Math.round((labCosts / totalExpenses) * 100) : 0,
+        total: totalLabCosts,
+        count: labPaymentCount + labExpensesCount,
+        pct: totalExpenses > 0 ? Math.round((totalLabCosts / totalExpenses) * 100) : 0,
       }
     : null;
 
@@ -508,12 +522,14 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
     if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
       prevExpenseMatch.clinic = new mongoose.Types.ObjectId(clinic);
     }
-    const [prevExpAgg] = await Expense.aggregate([
+    // Apply the same lab-bucketing logic: lab-category Expense docs count as lab costs.
+    const prevExpAgg = await Expense.aggregate([
       { $match: prevExpenseMatch },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+      { $group: { _id: "$category", total: { $sum: "$amount" } } },
     ]);
-    const prevOtherExp = prevExpAgg?.total || 0;
-    const prevTotalExp = prevLabCosts.labCosts + prevOtherExp;
+    const prevLabExp  = prevExpAgg.filter((e) => e._id === "lab").reduce((s, e) => s + e.total, 0);
+    const prevOtherExp = prevExpAgg.filter((e) => e._id !== "lab").reduce((s, e) => s + e.total, 0);
+    const prevTotalExp = (prevLabCosts.labCosts + prevLabExp) + prevOtherExp;
     const prevNetProfit = prevRevenue.netRevenue - prevTotalExp;
 
     const pct = (curr, prev) =>
@@ -541,7 +557,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
       net: netRevenue,
     },
     expenses: {
-      lab: labCosts,
+      lab: totalLabCosts,
       other: totalOtherExpenses,
       total: totalExpenses,
       breakdown: labBreakdown
