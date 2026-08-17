@@ -327,6 +327,31 @@ export const voidExpense = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Permanently hard-delete a voided expense (admin only, two-step safety).
+ *          An active expense must be voided first — this prevents accidental deletion
+ *          of records that are still counted in P&L.
+ * @route   DELETE /api/expenses/:id/permanent
+ * @access  Admin only (restrictTo("admin"))
+ */
+export const permanentDeleteExpense = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return ApiResponse.error(res, "Invalid expense ID", 400);
+
+  const expense = await Expense.findById(id);
+  if (!expense) return ApiResponse.error(res, "Expense not found", 404);
+  if (!expense.isVoided)
+    return ApiResponse.error(
+      res,
+      "Only voided expenses can be permanently deleted. Void the expense first.",
+      400
+    );
+
+  await Expense.deleteOne({ _id: id });
+  ApiResponse.success(res, null, "Expense permanently deleted");
+});
+
+/**
  * @desc    Summary stats for the current filter (total + by category)
  * @route   GET /api/expenses/stats?from&to&category&clinic
  * @access  Admin (checkPermission expenses:view)

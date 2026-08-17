@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authProtect } from "../../middlewares/auth.middleware.js";
+import { authProtect, restrictTo } from "../../middlewares/auth.middleware.js";
 import { checkPermission } from "../../middlewares/permission.middleware.js";
 import * as expenseController from "./expense.controller.js";
 
@@ -29,5 +29,10 @@ router.post("/", authProtect, checkPermission("expenses", "create"), expenseCont
 router.get("/:id", authProtect, checkPermission("expenses", "view"), expenseController.getExpenseById);
 router.patch("/:id", authProtect, checkPermission("expenses", "edit"), expenseController.updateExpense);
 router.post("/:id/void", authProtect, checkPermission("expenses", "delete"), expenseController.voidExpense);
+
+// Permanent hard-delete — ADMIN ONLY, voided-only (two-step safety).
+// restrictTo("admin") is used because expenses:delete is held by non-admin staff for
+// ordinary voiding, and permanent financial record destruction must sit with admin alone.
+router.delete("/:id/permanent", authProtect, restrictTo("admin"), expenseController.permanentDeleteExpense);
 
 export default router;
