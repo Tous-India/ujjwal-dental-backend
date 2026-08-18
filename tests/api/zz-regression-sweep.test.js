@@ -106,7 +106,7 @@ describe("ZZ Comprehensive regression sweep", () => {
     });
     expect(res.status).toBe(201);
 
-    const num = res.body.data.appointmentNumber; // e.g. UD-2608-1201
+    const num = res.body.data.appointmentNumber; // e.g. UD-260817-1201
     const hhmm = num.split("-").pop();
 
     // Normalise to IST regardless of the host timezone. (An earlier version of

@@ -360,7 +360,7 @@ appointmentSchema.index(
 
 /**
  * Generate appointment number before saving
- * Format: CLINIC_CODE-YYMM-HHMM (HHMM = real booking time, not the appointment's date/slot)
+ * Format: CLINIC_CODE-YYMMDD-HHMM (HHMM = real IST booking time, 24-hour, not the appointment's date/slot)
  */
 appointmentSchema.pre("save", async function () {
   // Run only for new appointments
@@ -381,20 +381,21 @@ appointmentSchema.pre("save", async function () {
   // be wrong near the UTC day boundary (00:00-05:30 IST is still "yesterday"
   // in UTC) on a UTC-default server. istDateKey() already solves this the
   // same way the daily token counter does.
-  const [istYear, istMonth] = istDateKey(now).split("-");
+  const [istYear, istMonth, istDay] = istDateKey(now).split("-");
   const year = istYear.slice(-2);
   const month = istMonth;
+  const day = istDay;
 
   // Prefer an explicit per-clinic code (set on the Clinic doc to avoid
   // collisions between similarly-named clinics); fall back to computed
   // name-initials. Always sliced to 2 chars — the appointment number format
-  // is {2-letter-code}-{YYMM}-{HHMM}.
+  // is {2-letter-code}-{YYMMDD}-{HHMM}.
   const clinicCode = (
     clinic.code ||
     clinic.name?.split(/[\s-]+/).map((w) => w[0]).join("").toUpperCase() ||
     "UC"
   ).slice(0, 2);
-  const prefix = `${clinicCode}-${year}${month}-`;
+  const prefix = `${clinicCode}-${year}${month}${day}-`;
 
   // Last 4 digits reflect the real booking moment (HHMM, 24h) rather than a
   // serial counter — walk forward minute-by-minute on collision (two admins
