@@ -14,6 +14,7 @@ const router = Router();
 // ==================== PUBLIC ====================
 
 router.get("/public", blogController.getPublishedBlogs);
+router.get("/public/:id/related", blogController.getRelatedBlogs);
 router.get("/public/:slug", blogController.getPublishedBlogBySlug);
 
 // ==================== ADMIN (per-action, not a single blanket gate) ====================

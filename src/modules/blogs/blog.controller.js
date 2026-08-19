@@ -165,9 +165,14 @@ export const createBlog = asyncHandler(async (req, res) => {
     excerpt,
     content,
     coverImage,
+    coverImageAlt,
     tags,
     seoTitle,
     seoDescription,
+    canonicalUrl,
+    ogImage,
+    ogTitle,
+    ogDescription,
     status,
     category,
     scheduledPublishAt,
@@ -175,6 +180,10 @@ export const createBlog = asyncHandler(async (req, res) => {
 
   if (!title || !content) {
     return ApiResponse.error(res, "Title and content are required", 400);
+  }
+
+  if (canonicalUrl && canonicalUrl.trim() !== "" && !/^https?:\/\//i.test(canonicalUrl.trim())) {
+    return ApiResponse.error(res, "Canonical URL must be an absolute URL starting with http:// or https://", 400);
   }
 
   const resolvedStatus = ["published", "scheduled"].includes(status) ? status : "draft";
@@ -189,9 +198,14 @@ export const createBlog = asyncHandler(async (req, res) => {
     excerpt,
     content,
     coverImage,
+    coverImageAlt: coverImageAlt || "",
     tags,
     seoTitle,
     seoDescription,
+    canonicalUrl: canonicalUrl ? canonicalUrl.trim() : "",
+    ogImage: ogImage || "",
+    ogTitle: ogTitle || "",
+    ogDescription: ogDescription || "",
     category,
     status: resolvedStatus,
     scheduledPublishAt: resolvedStatus === "scheduled" ? new Date(scheduledPublishAt) : null,
@@ -223,15 +237,29 @@ export const updateBlog = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Blog not found", 404);
   }
 
+  // Validate canonicalUrl before applying updates
+  if (
+    req.body.canonicalUrl !== undefined &&
+    req.body.canonicalUrl.trim() !== "" &&
+    !/^https?:\/\//i.test(req.body.canonicalUrl.trim())
+  ) {
+    return ApiResponse.error(res, "Canonical URL must be an absolute URL starting with http:// or https://", 400);
+  }
+
   const allowedFields = [
     "title",
     "slug",
     "excerpt",
     "content",
     "coverImage",
+    "coverImageAlt",
     "tags",
     "seoTitle",
     "seoDescription",
+    "canonicalUrl",
+    "ogImage",
+    "ogTitle",
+    "ogDescription",
     "status",
     "category",
     "scheduledPublishAt",
@@ -371,6 +399,61 @@ export const getBlogStats = asyncHandler(async (req, res) => {
     },
     "Blog stats fetched successfully",
   );
+});
+
+/**
+ * @desc    Get related blog posts for a given published post
+ * @route   GET /api/blogs/public/:id/related
+ * @access  Public
+ *
+ * Logic:
+ * 1. Find posts in same category (excluding current), most recent first, limit 3.
+ * 2. Top up with most recent published posts from ANY category (excluding current
+ *    and already-included) to reach 3 total.
+ * 3. Returns however many exist if total published count < 4.
+ */
+export const getRelatedBlogs = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return ApiResponse.error(res, "Invalid blog ID", 400);
+  }
+
+  const currentPost = await Blog.findOne({ _id: id, ...publicVisibilityQuery() }).select("category");
+
+  if (!currentPost) {
+    return ApiResponse.error(res, "Blog not found", 404);
+  }
+
+  const projection = "title slug coverImage coverImageAlt publishedAt readTimeMinutes category";
+
+  // Step 1: same-category posts, excluding current
+  const sameCategoryPosts = await Blog.find({
+    _id: { $ne: id },
+    category: currentPost.category,
+    ...publicVisibilityQuery(),
+  })
+    .select(projection)
+    .sort({ publishedAt: -1 })
+    .limit(3);
+
+  let related = [...sameCategoryPosts];
+
+  // Step 2: top up with any-category posts if needed
+  if (related.length < 3) {
+    const excludeIds = [id, ...related.map((p) => p._id.toString())];
+    const extras = await Blog.find({
+      _id: { $nin: excludeIds },
+      ...publicVisibilityQuery(),
+    })
+      .select(projection)
+      .sort({ publishedAt: -1 })
+      .limit(3 - related.length);
+
+    related = [...related, ...extras];
+  }
+
+  ApiResponse.success(res, { blogs: related }, "Related blogs fetched successfully");
 });
 
 /**

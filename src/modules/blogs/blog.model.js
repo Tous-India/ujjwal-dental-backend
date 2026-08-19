@@ -37,6 +37,14 @@ const blogSchema = new mongoose.Schema(
     // computeReadTime in blog.controller.js) -- stored rather than
     // recalculated on every public read.
     readTimeMinutes: { type: Number, default: 1 },
+    // SEO: canonical URL (leave blank unless the post is syndicated elsewhere)
+    canonicalUrl: { type: String, default: "" },
+    // Accessibility: alt text for the cover image
+    coverImageAlt: { type: String, default: "" },
+    // Open Graph / social sharing overrides
+    ogImage: { type: String, default: "" },
+    ogTitle: { type: String, default: "" },
+    ogDescription: { type: String, default: "" },
   },
   { timestamps: true },
 );
