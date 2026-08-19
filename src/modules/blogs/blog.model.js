@@ -45,6 +45,8 @@ const blogSchema = new mongoose.Schema(
     ogImage: { type: String, default: "" },
     ogTitle: { type: String, default: "" },
     ogDescription: { type: String, default: "" },
+    // SEO: focus keyword for density analysis (editor-only, not rendered publicly)
+    focusKeyword: { type: String, default: "" },
   },
   { timestamps: true },
 );

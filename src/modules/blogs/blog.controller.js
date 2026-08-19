@@ -207,6 +207,7 @@ export const createBlog = asyncHandler(async (req, res) => {
     ogImage: ogImage || "",
     ogTitle: ogTitle || "",
     ogDescription: ogDescription || "",
+    focusKeyword: req.body.focusKeyword || "",
     category,
     status: resolvedStatus,
     scheduledPublishAt: resolvedStatus === "scheduled" ? new Date(scheduledPublishAt) : null,
@@ -265,6 +266,7 @@ export const updateBlog = asyncHandler(async (req, res) => {
     "category",
     "scheduledPublishAt",
     "author",
+    "focusKeyword",
   ];
 
   allowedFields.forEach((field) => {
