@@ -13,6 +13,25 @@ import mongoose from "mongoose";
  */
 
 /**
+ * @desc    List users selectable as blog authors
+ * @route   GET /api/users/blog-authors
+ * @access  Admin / Blog Editor (blogs.view permission)
+ *
+ * Returns active users whose role permits blog management:
+ * admin, blog_editor, and clinic_manager all have blog permissions.
+ */
+export const getBlogAuthors = asyncHandler(async (req, res) => {
+  const authors = await User.find({
+    role: { $in: ["admin", "blog_editor", "clinic_manager"] },
+    isActive: true,
+  })
+    .select("_id name email")
+    .sort({ name: 1 });
+
+  ApiResponse.success(res, { authors }, "Blog authors fetched successfully");
+});
+
+/**
  * @desc    Get all users (admin/staff)
  * @route   GET /api/users
  * @access  Admin

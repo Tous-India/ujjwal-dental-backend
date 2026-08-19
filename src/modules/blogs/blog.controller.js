@@ -176,6 +176,7 @@ export const createBlog = asyncHandler(async (req, res) => {
     status,
     category,
     scheduledPublishAt,
+    author: bodyAuthor,
   } = req.body;
 
   if (!title || !content) {
@@ -211,7 +212,7 @@ export const createBlog = asyncHandler(async (req, res) => {
     scheduledPublishAt: resolvedStatus === "scheduled" ? new Date(scheduledPublishAt) : null,
     publishedAt: resolvedStatus === "published" ? new Date() : null,
     readTimeMinutes: computeReadTime(content),
-    author: req.user._id,
+    author: bodyAuthor || req.user._id,
   });
 
   const populatedBlog = await Blog.findById(blog._id).populate("author", "name");
@@ -263,6 +264,7 @@ export const updateBlog = asyncHandler(async (req, res) => {
     "status",
     "category",
     "scheduledPublishAt",
+    "author",
   ];
 
   allowedFields.forEach((field) => {

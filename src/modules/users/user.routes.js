@@ -11,6 +11,9 @@ import { checkPermission } from "../../middlewares/permission.middleware.js";
  *   - Admin only: create / update / delete users (account & role management)
  */
 
+// Get blog-eligible authors (admin/blog_editor/clinic_manager) — for author select dropdown
+router.get("/blog-authors", authProtect, checkPermission("blogs", "view"), userController.getBlogAuthors);
+
 // Get all users (admin/staff list) — authenticated staff/admin
 router.get("/", authProtect, userController.getAllUsers);
 
