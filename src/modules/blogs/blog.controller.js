@@ -208,6 +208,11 @@ export const createBlog = asyncHandler(async (req, res) => {
     ogTitle: ogTitle || "",
     ogDescription: ogDescription || "",
     focusKeyword: req.body.focusKeyword || "",
+    faqs: (req.body.faqs || []).filter(
+      (f) =>
+        (f.question || "").trim() &&
+        (f.answer || "").replace(/<[^>]*>/g, "").trim(),
+    ),
     category,
     status: resolvedStatus,
     scheduledPublishAt: resolvedStatus === "scheduled" ? new Date(scheduledPublishAt) : null,
@@ -267,11 +272,21 @@ export const updateBlog = asyncHandler(async (req, res) => {
     "scheduledPublishAt",
     "author",
     "focusKeyword",
+    "faqs",
   ];
 
   allowedFields.forEach((field) => {
     if (req.body[field] !== undefined) {
-      blog[field] = req.body[field];
+      if (field === "faqs") {
+        // Filter out pairs where question or stripped answer is empty
+        blog.faqs = (req.body.faqs || []).filter(
+          (f) =>
+            (f.question || "").trim() &&
+            (f.answer || "").replace(/<[^>]*>/g, "").trim(),
+        );
+      } else {
+        blog[field] = req.body[field];
+      }
     }
   });
 

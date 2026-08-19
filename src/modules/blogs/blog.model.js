@@ -47,6 +47,15 @@ const blogSchema = new mongoose.Schema(
     ogDescription: { type: String, default: "" },
     // SEO: focus keyword for density analysis (editor-only, not rendered publicly)
     focusKeyword: { type: String, default: "" },
+    // FAQ section — rendered as accordion on the public page and emitted as
+    // FAQPage JSON-LD schema. Pairs where either question or stripped answer
+    // is empty are filtered out at create/update time.
+    faqs: [
+      {
+        question: { type: String, default: "" },
+        answer: { type: String, default: "" }, // rich-text HTML from FaqAnswerEditor
+      },
+    ],
   },
   { timestamps: true },
 );
