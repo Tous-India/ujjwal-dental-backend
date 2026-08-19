@@ -2335,13 +2335,15 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
     }).sort({ invoiceDate: 1, createdAt: 1 });
 
     let remaining = verifiedAmount;
+    const settledInvoicesArr = [];
     for (const invoice of invoices) {
       if (remaining <= 0) break;
       const balanceDue = invoice.balanceDue || Math.max(0, invoice.grandTotal - (invoice.amountPaid || 0));
       const applyAmount = Math.min(remaining, balanceDue);
       if (applyAmount <= 0) continue;
 
-      invoice.amountPaid = (invoice.amountPaid || 0) + applyAmount;
+      const previousAmountPaid = invoice.amountPaid || 0;
+      invoice.amountPaid = previousAmountPaid + applyAmount;
       invoice.balanceDue = Math.max(0, invoice.grandTotal - invoice.amountPaid);
 
       if (invoice.amountPaid >= invoice.grandTotal) {
@@ -2353,6 +2355,12 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       }
 
       await invoice.save();
+      settledInvoicesArr.push({
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        appliedAmount: applyAmount,
+        previousAmountPaid,
+      });
       remaining -= applyAmount;
     }
 
@@ -2366,6 +2374,7 @@ export const verifyPendingPayment = asyncHandler(async (req, res) => {
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
       razorpaySignature: razorpay_signature,
+      settledInvoices: settledInvoicesArr,
       notes: "Pending amount payment via Razorpay",
     });
     await payment.save();
