@@ -23,6 +23,7 @@ import treatmentPageRoutes from "./modules/cms/treatmentPage.routes.js";
 import blogRoutes from "./modules/blogs/blog.routes.js";
 import permissionRoutes from "./modules/permissions/permission.routes.js";
 import expenseRoutes from "./modules/expenses/expense.routes.js";
+import externalIncomeRoutes from "./modules/externalIncome/externalIncome.routes.js";
 import { optionalAuth } from "./middlewares/auth.middleware.js";
 
 const router = Router();
@@ -282,6 +283,15 @@ router.use("/permissions", permissionRoutes);
 // PATCH  /api/expenses/:id             - Update expense (recordedBy immutable)
 // DELETE /api/expenses/:id             - Hard delete expense (confirm dialog required)
 router.use("/expenses", expenseRoutes);
+
+// ========== EXTERNAL INCOME ==========
+// GET    /api/external-income          - List records (date range filter)
+// POST   /api/external-income          - Record new entry (recordedBy always server-set)
+// PUT    /api/external-income/:id      - Update entry (cannot update voided)
+// POST   /api/external-income/:id/void - Void entry (requires voidReason)
+// GET    /api/external-income/stats    - Total amount for date range
+// GET    /api/external-income/staff    - Staff list for doctor dropdown
+router.use("/external-income", externalIncomeRoutes);
 
 // ========== API INFO ==========
 router.get("/", (req, res) => {

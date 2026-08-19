@@ -7,6 +7,7 @@ import LabOrder from "../labs/labOrder.model.js";
 import User from "../users/user.model.js";
 import mongoose from "mongoose";
 import { parseIstDateRange, istStartOfDay, istEndOfDay } from "../../utils/istDateRange.js";
+import { computeExternalIncomeTotal } from "../../utils/computeExternalIncomeTotal.js";
 
 // ─── Revenue helpers ───────────────────────────────────────────────────────────
 //
@@ -58,7 +59,17 @@ const computeRevenue = async ({ from, to, clinic } = {}) => {
   ]);
   const totalRefunds = refundAgg?.total || 0;
 
-  return { grossRevenue, totalRefunds, netRevenue: grossRevenue - totalRefunds };
+  // External income: non-patient revenue (another source) — added here so that
+  // every revenue figure in the app (P&L, Payment History) picks it up from
+  // ONE shared utility. Never counted separately per page.
+  const externalIncome = await computeExternalIncomeTotal({ from, to });
+
+  return {
+    grossRevenue: grossRevenue + externalIncome,
+    totalRefunds,
+    netRevenue: grossRevenue + externalIncome - totalRefunds,
+    externalIncome,
+  };
 };
 
 // ─── Lab cost helper ────────────────────────────────────────────────────────────
@@ -435,7 +446,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
   // ── Current period ─────────────────────────────────────────────────────────
 
   const [
-    { grossRevenue, totalRefunds, netRevenue },
+    { grossRevenue, totalRefunds, netRevenue, externalIncome },
     { labCosts, labPaymentCount },
   ] = await Promise.all([
     computeRevenue({ from, to, clinic }),
@@ -514,7 +525,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
 
   if (prevRange) {
     const [prevRevenue, prevLabCosts] = await Promise.all([
-      computeRevenue({ from: prevRange.from, to: prevRange.to, clinic }),
+      computeRevenue({ from: prevRange.from, to: prevRange.to, clinic }), // includes external income via computeRevenue
       computeLabCosts({ from: prevRange.from, to: prevRange.to }),
     ]);
 
@@ -555,6 +566,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
       gross: grossRevenue,
       refunds: totalRefunds,
       net: netRevenue,
+      externalIncome,
     },
     expenses: {
       lab: totalLabCosts,

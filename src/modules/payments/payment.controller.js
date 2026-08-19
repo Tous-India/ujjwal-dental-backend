@@ -1,6 +1,7 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { notify } from "../../utils/notifyHelper.js";
+import { computeExternalIncomeTotal } from "../../utils/computeExternalIncomeTotal.js";
 import { fireWhatsApp, sendWhatsApp } from "../../utils/whatsapp.js";
 import { generateRazorpayPaymentLink } from "../../utils/razorpayLinks.js";
 import Payment from "./payment.model.js";
@@ -1600,13 +1601,20 @@ export const getPaymentSummaryStats = asyncHandler(async (req, res) => {
     Payment.countDocuments(transactionMatch),
   ]);
 
-  const totalCollected = collectedResult[0]?.total || 0;
+  const patientCollected = collectedResult[0]?.total || 0;
   const totalRefunded = refundedResult[0]?.total || 0;
+
+  // External income (another source revenue) — added in ONE shared place
+  // (computeExternalIncomeTotal) so the total is consistent across P&L and
+  // Payment History. This is the only call site in payment.controller.js.
+  const externalIncome = await computeExternalIncomeTotal({ from, to });
+  const totalCollected = patientCollected + externalIncome;
 
   ApiResponse.success(
     res,
     {
       totalCollected,
+      externalIncome,
       totalRefunded,
       netCollection: totalCollected - totalRefunded,
       transactionCount,
