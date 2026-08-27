@@ -1290,6 +1290,11 @@ export const bookAppointmentWithPayment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "bookingType must be 'regular' or 'emergency'", 400);
   }
 
+  // Email is optional. Validate format early before any DB calls.
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return ApiResponse.error(res, "Invalid email format", 400);
+  }
+
   /* =======================
      VERIFY reCAPTCHA
   ======================== */
