@@ -11,8 +11,8 @@ const router = Router();
  * APPOINTMENT ROUTES
  * Base path: /api/appointments
  * Access:
- *   - Public:                available-slots, create (book), book-with-payment
- *   - Staff/admin:           list / today / upcoming, update, status, check-in, complete
+ *   - Public:                available-slots, initiate-booking, confirm-booking
+ *   - Staff/admin only:      create (POST /), list / today / upcoming, update, status, check-in, complete
  *   - Admin only:            permanent delete
  *   - Patient-self or staff: cancel, reschedule, my-appointments-by-phone
  */
@@ -64,10 +64,16 @@ router.get("/unbilled", authProtect, appointmentController.getUnbilledAppointmen
 // see slots for backdated dates (same allowance as createAppointment)
 router.get("/available-slots", optionalAuth, appointmentController.getAvailableSlots);
 
-// Create new appointment (book) — public; optionalAuth records staff id when present
-router.post("/", optionalAuth, checkPermissionIfStaff("appointments", "create"), appointmentController.createAppointment);
+// Step 1 of online booking: hold slot (PENDING) + create Razorpay order — public
+router.post("/initiate-booking", appointmentController.initiateBooking);
 
-// Book appointment after payment (public - for online booking)
+// Step 2 of online booking: verify payment paid, confirm appointment, generate invoice — public
+router.post("/confirm-booking", appointmentController.confirmBooking);
+
+// Create new appointment (book) — staff/admin only (closes the unauthenticated hole)
+router.post("/", authProtect, checkPermission("appointments", "create"), appointmentController.createAppointment);
+
+// Book appointment after payment (legacy — kept for backward compatibility)
 router.post("/book-with-payment", appointmentController.bookAppointmentWithPayment);
 
 // Book free OPD appointment for logged-in patients with active membership

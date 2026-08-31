@@ -411,6 +411,7 @@ export const getClinicStats = asyncHandler(async (req, res) => {
       $match: {
         clinic: clinic._id,
         date: { $gte: start, $lte: end },
+        status: { $ne: "pending" },
       },
     },
     {

@@ -141,7 +141,10 @@ const validateAppointmentSlot = async ({ clinic, date, timeSlot, bookingType, al
     clinic,
     date: { $gte: dayStart, $lte: dayEnd },
     timeSlot,
-    status: { $ne: "cancelled" },
+    $or: [
+      { status: { $nin: ["cancelled", "pending"] } },
+      { status: "pending", pendingExpiry: { $gt: new Date() } },
+    ],
   });
   if (slotCount >= capacity) {
     return {
@@ -225,7 +228,7 @@ export const getUnbilledAppointments = asyncHandler(async (req, res) => {
   const unbilled = await Appointment.find({
     invoice: { $in: [null, undefined] },
     isFree: { $ne: true },
-    status: { $ne: "cancelled" },
+    status: { $nin: ["cancelled", "pending"] },
     $or: [{ fee: { $gt: 0 } }, { opdFee: { $gt: 0 } }],
   })
     .populate("patient", "name phone")
@@ -248,7 +251,7 @@ export const getStaleTreatments = asyncHandler(async (req, res) => {
     visitType: "treatment",
     treatmentStatus: null,
     sessionsPlanned: { $ne: null, $gt: 0 },
-    status: { $ne: "cancelled" },
+    status: { $nin: ["cancelled", "pending"] },
   })
     .populate("patient", "name phone")
     .populate("clinic", "name code")
@@ -258,7 +261,7 @@ export const getStaleTreatments = asyncHandler(async (req, res) => {
   for (const parent of candidates) {
     const sessions = await Appointment.find({
       parentAppointment: parent._id,
-      status: { $ne: "cancelled" },
+      status: { $nin: ["cancelled", "pending"] },
     })
       .select("createdAt")
       .sort({ createdAt: -1 })
@@ -360,6 +363,9 @@ export const getAllAppointments = asyncHandler(async (req, res) => {
     filter.patient = { $in: matchingPatients.map((p) => p._id) };
   }
 
+  // Always exclude pending holds — they are invisible to all admin views
+  filter.$and = [{ status: { $ne: "pending" } }];
+
   // 2. Query appointments with pagination
   const skip = (Number(page) - 1) * Number(limit);
 
@@ -403,7 +409,7 @@ export const getTodayAppointments = asyncHandler(async (req, res) => {
   // 2️⃣ Query appointments for today (FIXED FIELD)
   const appointments = await Appointment.find({
     date: { $gte: startOfDay, $lte: endOfDay }, // ✅ FIX HERE
-    status: { $ne: "cancelled" },
+    status: { $nin: ["cancelled", "pending"] },
   })
     // 3️⃣ Sort by time slot / token
     .sort({ tokenNumber: 1 })
@@ -495,7 +501,10 @@ export const getAvailableSlots = asyncHandler(async (req, res) => {
   const bookedAppointments = await Appointment.find({
     clinic: clinicId,
     date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $nin: ["cancelled"] },
+    $or: [
+      { status: { $nin: ["cancelled", "pending"] } },
+      { status: "pending", pendingExpiry: { $gt: new Date() } },
+    ],
   }).select("timeSlot");
 
   // Count active bookings per slot; a slot is "booked" once it hits capacity.
@@ -593,7 +602,7 @@ export const getAppointmentById = asyncHandler(async (req, res) => {
     .populate("originatingOpdAppointment", "appointmentNumber date")
     .populate("invoice", "invoiceNumber items subtotal discount totalTax grandTotal amountPaid balanceDue paymentStatus");
 
-  if (!appointment) {
+  if (!appointment || appointment.status === "pending") {
     return ApiResponse.error(res, "Appointment not found", 404);
   }
 
@@ -623,7 +632,7 @@ export const getAppointmentsByPhone = asyncHandler(async (req, res) => {
   }
 
   // 2. Find appointments for this patient
-  const appointments = await Appointment.find({ patient: patient._id })
+  const appointments = await Appointment.find({ patient: patient._id, status: { $ne: "pending" } })
     .populate("patient", "name phone")
     .populate("clinic", "name code")
     .populate("createdBy", "name")
@@ -2781,4 +2790,325 @@ export const updateTreatmentItems = asyncHandler(async (req, res) => {
   }
 
   return ApiResponse.success(res, responseData, "Treatment items updated successfully");
+});
+
+// ==================== PENDING HOLD FLOW ====================
+// Public online booking uses a two-step protocol to guarantee that a slot
+// is never visibly reserved without confirmed payment:
+//   1. initiateBooking  — hold the slot (status="pending") + create Razorpay order
+//   2. confirmBooking   — verify payment paid, flip to scheduled, generate invoice
+
+const PENDING_HOLD_MS = 15 * 60 * 1000; // 15 minutes
+
+/**
+ * @desc  Hold a slot while the patient completes Razorpay checkout.
+ *        Creates a PENDING appointment (invisible everywhere) + a Razorpay order.
+ * @route POST /api/appointments/initiate-booking
+ * @access Public (no auth required)
+ */
+export const initiateBooking = asyncHandler(async (req, res) => {
+  const {
+    name,
+    phone,
+    email,
+    clinic,
+    date,
+    timeSlot,
+    reason,
+    type,
+    bookingType,
+    captchaToken,
+  } = req.body;
+
+  const urgency = bookingType || "regular";
+  if (!["regular", "emergency"].includes(urgency)) {
+    return ApiResponse.error(res, "bookingType must be 'regular' or 'emergency'", 400);
+  }
+
+  if (!clinic || !date || !timeSlot || !phone || !reason) {
+    return ApiResponse.error(res, "clinic, date, timeSlot, phone and reason are required", 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(clinic)) {
+    return ApiResponse.error(res, "Invalid clinic ID", 400);
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return ApiResponse.error(res, "Invalid email format", 400);
+  }
+
+  // reCAPTCHA verification (same pattern as bookAppointmentWithPayment)
+  if (process.env.RECAPTCHA_SECRET_KEY && captchaToken) {
+    try {
+      const captchaRes = await fetch("https://www.google.com/recaptcha/api/siteverify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${captchaToken}`,
+      });
+      const captchaData = await captchaRes.json();
+      if (!captchaData.success) {
+        return ApiResponse.error(res, "reCAPTCHA verification failed. Please try again.", 400);
+      }
+    } catch (err) {
+      console.error("[initiateBooking] reCAPTCHA error:", err.message);
+    }
+  }
+
+  // Slot validation — includes active-pending-hold check via validateAppointmentSlot
+  const slotError = await validateAppointmentSlot({ clinic, date, timeSlot, bookingType: urgency });
+  if (slotError) {
+    return ApiResponse.error(res, slotError.message, slotError.status);
+  }
+
+  // Resolve authoritative OPD fee (never trust client amount)
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    return ApiResponse.error(res, "Payment gateway not configured", 500);
+  }
+
+  const settings = await SystemSettings.getSettings();
+  const fees = settings?.feeSettings || {};
+  const amount = urgency === "emergency" ? fees.opdFeeEmergency : fees.opdFeeRegular;
+  if (!amount || amount <= 0) {
+    return ApiResponse.error(res, "OPD fee not configured", 500);
+  }
+
+  // Find-or-create patient (minimal: name + phone)
+  let patient = await Patient.findOne({ phone });
+  if (!patient && email) patient = await Patient.findOne({ email: email.toLowerCase() });
+  if (!patient) {
+    if (!name) return ApiResponse.error(res, "Name is required for new patient", 400);
+    patient = await Patient.create({
+      name,
+      phone,
+      email: email?.toLowerCase() || undefined,
+    });
+    fireWhatsApp(patient.phone, "account_created", { password: null }, patient.name);
+    if (email) {
+      const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/login`;
+      sendEmail({
+        to: email,
+        subject: "Welcome to Ujjwal Dental Clinic - Access Your Portal",
+        html: `<p>Hello ${name}, your patient portal account has been created. <a href="${loginUrl}">Log in with OTP</a>.</p>`,
+        text: `Hello ${name}, your patient portal account has been created. Log in at ${loginUrl} with OTP.`,
+      }).catch((err) => console.error("[initiateBooking] welcome email failed:", err));
+    }
+  } else if (email && !patient.email) {
+    patient.email = email.toLowerCase();
+    await patient.save();
+  }
+
+  // Create Razorpay order
+  const Razorpay = (await import("razorpay")).default;
+  const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+  const receipt = `init_${Date.now()}`;
+  let order;
+  try {
+    order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: "INR", receipt });
+  } catch (err) {
+    console.error("[initiateBooking] Razorpay order failed:", err?.error?.description || err.message);
+    return ApiResponse.error(res, err?.error?.description || "Failed to create payment order", err?.statusCode || 502);
+  }
+
+  // Create pending Payment doc
+  const payment = await Payment.createSafe({
+    patient: patient._id,
+    clinic,
+    amount,
+    paymentMode: "razorpay",
+    type: "advance",
+    status: "pending",
+    razorpayOrderId: order.id,
+    razorpayDetails: { receipt },
+  });
+
+  // Create PENDING appointment — slot held, invisible until confirmed.
+  // Pre-generate the _id so we can derive a guaranteed-unique placeholder
+  // appointmentNumber (the unique index on that field doesn't allow multiple
+  // nulls, and we can't skip it without a sparse-index migration).
+  // assignIdentifiers() overwrites this with the real clinic-code-based number
+  // at confirmation time.
+  const pendingExpiry = new Date(Date.now() + PENDING_HOLD_MS);
+  const apptId = new mongoose.Types.ObjectId();
+  const appointment = await Appointment.create({
+    _id: apptId,
+    patient: patient._id,
+    clinic,
+    date,
+    timeSlot,
+    reason,
+    type: type || "regular",
+    appointmentType: urgency,
+    opdFee: amount,
+    paymentMethod: "online",
+    paymentStatus: "unpaid",
+    source: "online",
+    status: "pending",
+    pendingExpiry,
+    appointmentNumber: `PENDING-${apptId.toString()}`,
+  });
+
+  // Link payment → pending appointment so confirmBooking can validate ownership
+  payment.appointment = appointment._id;
+  await payment.save();
+
+  return ApiResponse.success(
+    res,
+    {
+      pendingAppointmentId: appointment._id,
+      paymentId: payment._id,
+      order: { id: order.id, amount: order.amount, currency: order.currency },
+      key_id: process.env.RAZORPAY_KEY_ID,
+    },
+    "Slot held. Complete payment to confirm.",
+  );
+});
+
+/**
+ * @desc  Confirm a pending appointment after Razorpay payment succeeds.
+ *        Verifies the linked payment is paid, assigns identifiers, generates invoice.
+ *        Invoice failure here is a hard error (not swallowed) — a paid appointment
+ *        must always have an invoice.
+ * @route POST /api/appointments/confirm-booking
+ * @access Public (no auth required)
+ */
+export const confirmBooking = asyncHandler(async (req, res) => {
+  const { pendingAppointmentId, paymentId } = req.body;
+
+  if (!pendingAppointmentId || !mongoose.Types.ObjectId.isValid(pendingAppointmentId)) {
+    return ApiResponse.error(res, "Valid pendingAppointmentId is required", 400);
+  }
+  if (!paymentId || !mongoose.Types.ObjectId.isValid(paymentId)) {
+    return ApiResponse.error(res, "Valid paymentId is required", 400);
+  }
+
+  // Load the pending appointment
+  const appointment = await Appointment.findById(pendingAppointmentId);
+  if (!appointment) {
+    return ApiResponse.error(res, "Booking hold not found", 404);
+  }
+  if (appointment.status !== "pending") {
+    return ApiResponse.error(res, "This booking is already confirmed or cancelled", 409);
+  }
+  if (appointment.pendingExpiry && appointment.pendingExpiry < new Date()) {
+    return ApiResponse.error(res, "Booking hold expired — please start a new booking", 410);
+  }
+
+  // Verify payment is paid and belongs to this hold
+  const payment = await Payment.findById(paymentId);
+  if (!payment) {
+    return ApiResponse.error(res, "Payment record not found", 404);
+  }
+  if (String(payment.appointment) !== String(pendingAppointmentId)) {
+    return ApiResponse.error(res, "Payment does not match this booking hold", 400);
+  }
+  if (payment.status !== "paid") {
+    return ApiResponse.error(res, `Payment not completed (status: ${payment.status})`, 400);
+  }
+
+  const patient = await Patient.findById(appointment.patient);
+  if (!patient) {
+    return ApiResponse.error(res, "Patient not found", 500);
+  }
+
+  // Assign appointment number + token (skipped at initiation to avoid waste)
+  await Appointment.assignIdentifiers(appointment);
+
+  // Confirm the appointment
+  appointment.status = "scheduled";
+  appointment.opdFeePaid = true;
+  appointment.paymentStatus = "paid";
+  appointment.pendingExpiry = null;
+  await appointment.save();
+
+  // Generate invoice — hard error if both attempts fail (never leave a paid
+  // appointment without an invoice again)
+  let invoiceId = null;
+  let invoiceNumber;
+  let invoiceErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const invoice = await generateInvoice({
+        patient,
+        clinic: appointment.clinic,
+        appointment: appointment._id,
+        items: [{ itemType: "opd_fee", description: "OPD Consultation", unitPrice: payment.amount }],
+        amountPaid: payment.amount,
+        paymentMethod: "online",
+      });
+      invoiceId = invoice._id;
+      invoiceNumber = invoice.invoiceNumber;
+      appointment.invoice = invoice._id;
+      await appointment.save();
+
+      payment.settledInvoices = [{
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        appliedAmount: payment.amount,
+        previousAmountPaid: 0,
+      }];
+      await payment.save();
+      invoiceErr = null;
+      break;
+    } catch (err) {
+      invoiceErr = err;
+      console.error(`[confirmBooking] Invoice generation attempt ${attempt} failed:`, err.message);
+    }
+  }
+
+  if (invoiceErr) {
+    // Appointment is confirmed + paid — do NOT roll it back. Surface the invoice
+    // failure clearly so the admin can see and recover it via the unbilled alert.
+    await Appointment.updateOne(
+      { _id: appointment._id },
+      { $set: { invoiceError: { message: invoiceErr.message, failedAt: new Date() } } }
+    );
+    console.error("[confirmBooking] Invoice generation failed after 2 attempts for confirmed appointment", appointment._id);
+    // Return success for the booking itself but signal the invoice problem
+    return ApiResponse.success(
+      res,
+      {
+        appointmentId: appointment._id,
+        appointmentNumber: appointment.appointmentNumber,
+        tokenNumber: appointment.tokenNumber,
+        status: appointment.status,
+        opdFee: appointment.opdFee,
+        opdFeePaid: true,
+        invoiceId: null,
+        patient: { id: patient._id, name: patient.name, phone: patient.phone },
+      },
+      "Appointment confirmed but invoice generation failed — please contact the clinic.",
+    );
+  }
+
+  dispatchBookingNotifications(appointment._id);
+  fireWhatsApp(patient.phone, "payment_recorded", {
+    amount: payment.amount,
+    description: "OPD Consultation",
+    invoiceNumber,
+  }, patient.name);
+
+  notify({
+    recipientId: patient._id,
+    recipientModel: "Patient",
+    type: "appointment_confirmation",
+    title: "Appointment Confirmed",
+    message: `Your appointment #${appointment.appointmentNumber} has been confirmed. Token: ${appointment.tokenNumber}`,
+    sendEmail: true,
+    appointment: appointment._id,
+  });
+
+  return ApiResponse.created(
+    res,
+    {
+      appointmentId: appointment._id,
+      appointmentNumber: appointment.appointmentNumber,
+      tokenNumber: appointment.tokenNumber,
+      status: appointment.status,
+      opdFee: appointment.opdFee,
+      opdFeePaid: true,
+      invoiceId,
+      patient: { id: patient._id, name: patient.name, phone: patient.phone },
+    },
+    "Appointment booked successfully",
+  );
 });

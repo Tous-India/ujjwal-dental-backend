@@ -653,7 +653,7 @@ export const getPatientAppointments = asyncHandler(async (req, res) => {
   // (visitType "treatment"/"treatment_session") have their own dedicated
   // Treatments tab (getPatientTreatments); without this filter they showed
   // up in BOTH tabs simultaneously, since this endpoint never excluded them.
-  const query = { patient: id, visitType: "opd" };
+  const query = { patient: id, visitType: "opd", status: { $ne: "pending" } };
   if (status) {
     query.status = status;
   }
@@ -711,7 +711,7 @@ export const getPatientTreatments = asyncHandler(async (req, res) => {
   // they had. Reconnected to the real data source; deliberately separate
   // from admin's getAllAppointments (Treatments-tab collapse) query logic,
   // which has its own filtering semantics for a different (admin) need.
-  const query = { patient: id, visitType: "treatment" };
+  const query = { patient: id, visitType: "treatment", status: { $ne: "pending" } };
 
   // The portal's status filter maps onto treatmentStatus AFTER reshaping
   // (see treatmentStatusToPortalStatus below), not a raw Mongo field -- so
@@ -1012,7 +1012,7 @@ export const getPatientProfile = asyncHandler(async (req, res) => {
 
   // Get counts for summary
   const [appointmentCount, treatmentCount, invoiceCount] = await Promise.all([
-    Appointment.countDocuments({ patient: id }),
+    Appointment.countDocuments({ patient: id, status: { $ne: "pending" } }),
     Treatment.countDocuments({ patient: id }),
     Invoice.countDocuments({ patient: id }),
   ]);

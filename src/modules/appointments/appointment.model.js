@@ -174,9 +174,13 @@ const appointmentSchema = new mongoose.Schema(
     },
 
     // Status tracking
+    // "pending" = slot held while online payment is in flight; hidden from all
+    // admin/patient reads; treated as occupied by getAvailableSlots until
+    // pendingExpiry. Transitions to "scheduled" on payment confirmation.
     status: {
       type: String,
       enum: [
+        "pending",
         "scheduled",
         "confirmed",
         "checked_in",
@@ -186,6 +190,13 @@ const appointmentSchema = new mongoose.Schema(
         "no_show",
       ],
       default: "scheduled",
+    },
+
+    // Set only for status="pending" appointments; when now > pendingExpiry the
+    // hold is treated as expired on every read — no cron needed.
+    pendingExpiry: {
+      type: Date,
+      default: null,
     },
 
     // Reason for visit (chief complaint)
@@ -363,8 +374,9 @@ appointmentSchema.index(
  * Format: CLINIC_CODE-YYMMDD-HHMM (HHMM = real IST booking time, 24-hour, not the appointment's date/slot)
  */
 appointmentSchema.pre("save", async function () {
-  // Run only for new appointments
-  if (!this.isNew) return;
+  // Skip for pending appointments (numbers assigned at confirmation) and
+  // for updates to existing documents.
+  if (!this.isNew || this.status === "pending") return;
 
   const Clinic = mongoose.model("Clinic");
   const clinic = await Clinic.findById(this.clinic);
@@ -495,6 +507,50 @@ appointmentSchema.methods.markNoShow = function () {
 };
 
 // ============ STATICS ============
+
+/**
+ * Assign appointmentNumber + tokenNumber to an appointment that was created
+ * with status="pending" (numbers are skipped at creation so they are not
+ * consumed by holds that never convert to paid bookings).
+ * Call this once from confirmBooking, BEFORE saving the confirmed appointment.
+ */
+appointmentSchema.statics.assignIdentifiers = async function (appointment) {
+  const Clinic = mongoose.model("Clinic");
+  const clinic = await Clinic.findById(appointment.clinic);
+  if (!clinic) throw new Error("Clinic not found");
+
+  const now = new Date();
+  const [istYear, istMonth, istDay] = istDateKey(now).split("-");
+  const year = istYear.slice(-2);
+  const clinicCode = (
+    clinic.code ||
+    clinic.name?.split(/[\s-]+/).map((w) => w[0]).join("").toUpperCase() ||
+    "UC"
+  ).slice(0, 2);
+  const prefix = `${clinicCode}-${year}${istMonth}${istDay}-`;
+
+  for (let i = 0; i < 10; i++) {
+    const attemptTime = new Date(now.getTime() + i * 60000);
+    const { hour, minute } = istHourMinute(attemptTime);
+    const hh = String(hour).padStart(2, "0");
+    const mm = String(minute).padStart(2, "0");
+    const candidate = `${prefix}${hh}${mm}`;
+    const exists = await mongoose.model("Appointment").findOne({ appointmentNumber: candidate }).lean();
+    if (!exists) {
+      appointment.appointmentNumber = candidate;
+      break;
+    }
+  }
+  if (!appointment.appointmentNumber) {
+    const { hour, minute } = istHourMinute(now);
+    const ss = String(now.getUTCSeconds()).padStart(2, "0");
+    appointment.appointmentNumber = `${prefix}${String(hour).padStart(2, "0")}${String(minute).padStart(2, "0")}${ss}`;
+  }
+
+  const dateKey = istDateKey();
+  appointment.tokenDateKey = dateKey;
+  appointment.tokenNumber = await nextDailyToken(appointment.clinic, dateKey);
+};
 
 /**
  * Get available slots for a clinic on a specific date
