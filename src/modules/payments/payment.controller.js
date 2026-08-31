@@ -1636,10 +1636,26 @@ export const getPaymentStats = asyncHandler(async (req, res) => {
   const startDate = istRange.$gte || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   const endDate = istRange.$lte || new Date();
 
+  // When a custom date range is supplied, fall back to createdAt for legacy
+  // payments that were recorded with paidAt: null (old-style single-invoice
+  // link, before paidAt was reliably populated). Without this, those 8
+  // payments are invisible to every date-filtered query even though they
+  // are genuine paid records. The no-dates default (current month) keeps
+  // filtering on paidAt so existing dashboard behaviour is unchanged.
+  const paidAtFilter =
+    from || to
+      ? {
+          $or: [
+            { paidAt: { $gte: startDate, $lte: endDate } },
+            { paidAt: null, createdAt: { $gte: startDate, $lte: endDate } },
+          ],
+        }
+      : { paidAt: { $gte: startDate, $lte: endDate } };
+
   // Build match query
   const matchQuery = {
     status: "paid",
-    paidAt: { $gte: startDate, $lte: endDate },
+    ...paidAtFilter,
   };
 
   if (clinic && mongoose.Types.ObjectId.isValid(clinic)) {
