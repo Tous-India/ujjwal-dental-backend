@@ -570,6 +570,7 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
     },
     expenses: {
       lab: totalLabCosts,
+      labOrderPayments: labCosts,
       other: totalOtherExpenses,
       total: totalExpenses,
       breakdown: labBreakdown
