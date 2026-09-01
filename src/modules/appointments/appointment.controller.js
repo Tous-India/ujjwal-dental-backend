@@ -2355,7 +2355,8 @@ export const rescheduleAppointment = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Appointment not found", 404);
   }
 
-  if (["cancelled", "completed"].includes(appointment.status)) {
+  // pending = unpaid hold, never visible; completed/cancelled are immutable
+  if (["cancelled", "completed", "pending"].includes(appointment.status)) {
     return ApiResponse.error(res, "This appointment cannot be rescheduled", 400);
   }
 
