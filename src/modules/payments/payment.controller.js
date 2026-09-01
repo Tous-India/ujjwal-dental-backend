@@ -239,6 +239,10 @@ export const exportPaymentsPdf = asyncHandler(async (req, res) => {
   const filename = `payment-history-${tabLabel.toLowerCase()}-${today.replace(/ /g, "-")}.pdf`;
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  doc.on("error", (err) => {
+    console.error("[exportPaymentsPdf] PDFDocument stream error:", err);
+    if (!res.writableEnded) res.end();
+  });
   doc.pipe(res);
 
   // ── Brand colours (frontend/src/main.jsx MUI theme) ───────────────────────
@@ -613,6 +617,10 @@ export const exportCombined = asyncHandler(async (req, res) => {
   const filename = `payment-history-all-${today.replace(/ /g, "-")}.pdf`;
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  doc.on("error", (err) => {
+    console.error("[exportCombined] PDFDocument stream error:", err);
+    if (!res.writableEnded) res.end();
+  });
   doc.pipe(res);
 
   const drawHeaders = (y) => {
