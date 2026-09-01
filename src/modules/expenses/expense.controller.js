@@ -8,6 +8,48 @@ import User from "../users/user.model.js";
 import mongoose from "mongoose";
 import { parseIstDateRange, istStartOfDay, istEndOfDay } from "../../utils/istDateRange.js";
 import { computeExternalIncomeTotal } from "../../utils/computeExternalIncomeTotal.js";
+import PDFDocument from "pdfkit";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
+import { existsSync } from "fs";
+
+// ─── Module-level constants ───────────────────────────────────────────────────
+// Categories where a vendor/supplier name is meaningful.
+const VENDOR_CATEGORIES = new Set(["lab", "materials", "equipment", "marketing"]);
+// Explicit enum — validated here so the controller returns 400, not Mongoose's 500.
+const VALID_CATEGORIES  = ["lab", "salaries", "rent", "utilities", "materials", "equipment", "marketing", "other"];
+// Reasonable cap. An extra zero (e.g. 10000 → 100000) is a typo, not a
+// legitimate expense. Catches data-entry errors before they hit P&L.
+const MAX_AMOUNT = 1_000_000; // Rs10,00,000
+
+// IST-aware "is date in the future?" check.
+// Adds the IST offset to UTC so .toISOString().slice(0,10) returns the IST date,
+// then compares YYYY-MM-DD strings lexicographically.
+const isFutureDate = (dateStr) => {
+  const istNow    = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const todayIST  = istNow.toISOString().slice(0, 10);
+  const inputDate = String(dateStr).slice(0, 10);
+  return inputDate > todayIST;
+};
+
+// ─── Shared query builder ─────────────────────────────────────────────────────
+// Used by list + both export endpoints so filter logic never diverges.
+const buildExpenseQuery = ({ from, to, category, paymentMode, spentBy, clinic, search } = {}) => {
+  const query = { isVoided: { $ne: true } };
+  if (from || to) query.date = parseIstDateRange(from, to);
+  if (category) query.category = category;
+  if (paymentMode) query.paymentMode = paymentMode;
+  if (spentBy && mongoose.Types.ObjectId.isValid(spentBy)) query.spentBy = spentBy;
+  if (clinic && mongoose.Types.ObjectId.isValid(clinic)) query.clinic = new mongoose.Types.ObjectId(clinic);
+  if (search && search.trim()) {
+    const s = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [
+      { description: { $regex: s, $options: "i" } },
+      { vendor: { $regex: s, $options: "i" } },
+    ];
+  }
+  return query;
+};
 
 // ─── Revenue helpers ───────────────────────────────────────────────────────────
 //
@@ -133,22 +175,40 @@ export const createExpense = asyncHandler(async (req, res) => {
   if (!date || !category || !description || !amount || !paymentMode || !spentBy) {
     return ApiResponse.error(res, "date, category, description, amount, paymentMode, and spentBy are required", 400);
   }
+  // R4/explicit enum: return 400 not 500 on unknown category
+  if (!VALID_CATEGORIES.includes(category)) {
+    return ApiResponse.error(res, `Invalid category. Valid values: ${VALID_CATEGORIES.join(", ")}`, 400);
+  }
+  // R3: amount bounds
+  const amt = Number(amount);
+  if (isNaN(amt) || amt <= 0) {
+    return ApiResponse.error(res, "amount must be a positive number greater than zero", 400);
+  }
+  if (amt > MAX_AMOUNT) {
+    return ApiResponse.error(res, `amount cannot exceed Rs${MAX_AMOUNT.toLocaleString("en-IN")} — check for extra zeros`, 400);
+  }
+  // R2: IST-aware future-date guard
+  if (isFutureDate(date)) {
+    return ApiResponse.error(res, "Expense date cannot be in the future", 400);
+  }
   if (!mongoose.Types.ObjectId.isValid(spentBy)) {
     return ApiResponse.error(res, "Invalid spentBy user ID", 400);
   }
   if (clinic && !mongoose.Types.ObjectId.isValid(clinic)) {
     return ApiResponse.error(res, "Invalid clinic ID", 400);
   }
+  // R1: strip vendor for categories that do not take a supplier/vendor name
+  const safeVendor = VENDOR_CATEGORIES.has(category) ? (vendor?.trim() || undefined) : undefined;
 
   const expense = await Expense.create({
     date: new Date(date),
     category,
     description,
-    amount,
+    amount: amt,
     paymentMode,
     spentBy,
     recordedBy: req.user._id, // immutable — always the logged-in user
-    vendor,
+    vendor: safeVendor,
     clinic: clinic || undefined,
     notes,
   });
@@ -267,16 +327,63 @@ export const updateExpense = asyncHandler(async (req, res) => {
   const expense = await Expense.findById(req.params.id);
   if (!expense) return ApiResponse.error(res, "Expense not found", 404);
 
-  // recordedBy is server-set on create and NEVER editable — strip it silently.
-  const { recordedBy: _stripped, ...updates } = req.body;
+  // B2: voided expenses are immutable — editing them would corrupt the audit trail.
+  if (expense.isVoided) {
+    return ApiResponse.error(
+      res,
+      "Cannot edit a voided expense. Void is permanent — record a corrected entry instead.",
+      400
+    );
+  }
 
-  if (updates.spentBy && !mongoose.Types.ObjectId.isValid(updates.spentBy)) {
-    return ApiResponse.error(res, "Invalid spentBy user ID", 400);
+  // B1: strict field whitelist — only these fields may be supplied by the caller.
+  // Everything else (isVoided, voidedAt, voidedBy, voidReason, recordedBy,
+  // editedBy, editedAt, timestamps) is server-controlled and silently ignored.
+  const { date, category, description, amount, paymentMode, spentBy, vendor, notes } = req.body;
+  const updates = {};
+
+  if (date !== undefined) {
+    if (isFutureDate(date))
+      return ApiResponse.error(res, "Expense date cannot be in the future", 400);
+    updates.date = new Date(date);
   }
-  if (updates.clinic && !mongoose.Types.ObjectId.isValid(updates.clinic)) {
-    return ApiResponse.error(res, "Invalid clinic ID", 400);
+
+  if (category !== undefined) {
+    if (!VALID_CATEGORIES.includes(category))
+      return ApiResponse.error(res, `Invalid category. Valid values: ${VALID_CATEGORIES.join(", ")}`, 400);
+    updates.category = category;
   }
-  if (updates.date) updates.date = new Date(updates.date);
+
+  if (description !== undefined) updates.description = description;
+
+  if (amount !== undefined) {
+    const amt = Number(amount);
+    if (isNaN(amt) || amt <= 0)
+      return ApiResponse.error(res, "amount must be a positive number greater than zero", 400);
+    if (amt > MAX_AMOUNT)
+      return ApiResponse.error(res, `amount cannot exceed Rs${MAX_AMOUNT.toLocaleString("en-IN")} — check for extra zeros`, 400);
+    updates.amount = amt;
+  }
+
+  if (paymentMode !== undefined) updates.paymentMode = paymentMode;
+
+  if (spentBy !== undefined) {
+    if (!mongoose.Types.ObjectId.isValid(spentBy))
+      return ApiResponse.error(res, "Invalid spentBy user ID", 400);
+    updates.spentBy = spentBy;
+  }
+
+  // R1: vendor only valid for vendor-applicable categories (server-side strip).
+  if (vendor !== undefined) {
+    const effectiveCategory = category !== undefined ? category : expense.category;
+    if (VENDOR_CATEGORIES.has(effectiveCategory)) {
+      updates.vendor = vendor.trim() || undefined;
+    } else {
+      updates.vendor = undefined; // strip for non-vendor categories
+    }
+  }
+
+  if (notes !== undefined) updates.notes = notes;
 
   Object.assign(expense, updates);
   expense.editedBy = req.user._id;
@@ -509,11 +616,18 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
       }
     : null;
 
-  // Unpaid lab orders — surfaced for visibility, NOT counted in P&L expenses
+  // Unpaid lab orders — surfaced for visibility, NOT counted in P&L expenses.
+  // B3: filter by orderDate within the same from/to range.
+  // Reasoning: an unpaid order has no payment date (that is why it is unpaid);
+  // orderDate is the only meaningful anchor — it answers "what unpaid lab work
+  // was ordered during this period?" which is what the clinician expects.
+  const unpaidLabMatch = { paymentStatus: { $in: ["unpaid", "partially_paid"] } };
+  if (from || to) unpaidLabMatch.orderDate = parseIstDateRange(from, to);
+
   const [unpaidLabCount, unpaidLabAgg] = await Promise.all([
-    LabOrder.countDocuments({ paymentStatus: { $in: ["unpaid", "partially_paid"] } }),
+    LabOrder.countDocuments(unpaidLabMatch),
     LabOrder.aggregate([
-      { $match: { paymentStatus: { $in: ["unpaid", "partially_paid"] } } },
+      { $match: unpaidLabMatch },
       { $group: { _id: null, total: { $sum: "$balanceDue" } } },
     ]),
   ]);
@@ -584,4 +698,200 @@ export const getProfitLoss = asyncHandler(async (req, res) => {
     },
     previousPeriod,
   }, "P&L report generated");
+});
+
+// ─── Export helpers ────────────────────────────────────────────────────────────
+
+const MTH = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const fmtExportDate = (d) => {
+  if (!d) return "";
+  const dt = new Date(d);
+  return `${String(dt.getDate()).padStart(2,"0")} ${MTH[dt.getMonth()]} ${dt.getFullYear()}`;
+};
+
+/**
+ * @desc    Export active expenses as CSV (respects all filters, excludes voided)
+ * @route   GET /api/expenses/export/csv
+ * @access  Admin (checkPermission expenses:view)
+ */
+export const exportExpensesCsv = asyncHandler(async (req, res) => {
+  const { from, to, category, paymentMode, spentBy, clinic, search } = req.query;
+  const query = buildExpenseQuery({ from, to, category, paymentMode, spentBy, clinic, search });
+
+  const expenses = await Expense.find(query)
+    .populate("spentBy", "name")
+    .populate("recordedBy", "name")
+    .sort({ date: -1, createdAt: -1 })
+    .limit(10000)
+    .lean();
+
+  const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
+
+  const header = ["Date","Category","Description","Amount","Payment Mode","Spent By","Vendor","Notes","Recorded By","Recorded On"];
+  const rows   = expenses.map((e) => [
+    fmtExportDate(e.date),
+    e.category,
+    esc(e.description),
+    e.amount,
+    e.paymentMode,
+    esc(e.spentBy?.name),
+    esc(e.vendor),
+    esc(e.notes),
+    esc(e.recordedBy?.name),
+    fmtExportDate(e.createdAt),
+  ]);
+  const grandTotal = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const totalRow   = ["", "", "TOTAL", grandTotal, "", "", "", "", "", ""];
+
+  const csv = [header, ...rows, [], totalRow].map((r) => r.join(",")).join("\r\n");
+
+  const today = fmtExportDate(new Date()).replace(/ /g, "-");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="expenses-${today}.csv"`);
+  res.send(csv);
+});
+
+/**
+ * @desc    Export active expenses as PDF (respects all filters, excludes voided)
+ * @route   GET /api/expenses/export/pdf
+ * @access  Admin (checkPermission expenses:view)
+ *
+ * Portrait A4 (595.28 × 841.89 pt), 40pt margins, 515pt usable.
+ * 6 columns totalling 500pt (15pt right buffer so text never bleeds).
+ * Uses "Rs." not "₹" — PDFKit built-in fonts (Helvetica) use WinAnsiEncoding
+ * which does not include U+20B9 (₹); the ASCII fallback avoids glyph corruption.
+ */
+export const exportExpensesPdf = asyncHandler(async (req, res) => {
+  const { from, to, category, paymentMode, spentBy, clinic, search } = req.query;
+  const query = buildExpenseQuery({ from, to, category, paymentMode, spentBy, clinic, search });
+
+  const expenses = await Expense.find(query)
+    .populate("spentBy", "name")
+    .sort({ date: -1, createdAt: -1 })
+    .limit(5000)
+    .lean();
+
+  // Logo path — 4 levels up from this file to the repo root
+  const __dir    = dirname(fileURLToPath(import.meta.url));
+  const logoPath = resolve(__dir, "../../../../frontend/public/ujjwal-dental-logo.png");
+  const hasLogo  = existsSync(logoPath);
+
+  const fmtAmt = (n) => `Rs. ${Number(n || 0).toLocaleString("en-IN")}`;
+  const cap    = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + "…" : (s || "");
+
+  const PAGE_W = 595.28;
+  const PAGE_H = 841.89;
+  const MARGIN  = 40;
+  const USABLE  = PAGE_W - MARGIN * 2;
+
+  const doc = new PDFDocument({ size: [PAGE_W, PAGE_H], margin: MARGIN, autoFirstPage: true });
+
+  const today    = fmtExportDate(new Date());
+  const sfx      = category ? `-${category}` : "";
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="expenses${sfx}-${today.replace(/ /g, "-")}.pdf"`);
+  doc.pipe(res);
+
+  const NAVY  = "#0D1B4A";
+  const GRAY  = "#6B7280";
+
+  // 6 columns — total 500pt (leaves 15pt right buffer)
+  //   Date  Cat   Description  Amount  Mode  Spent By
+  const COLS = [
+    { label: "Date",        w: 62  },
+    { label: "Category",    w: 72  },
+    { label: "Description", w: 154 },
+    { label: "Amount",      w: 68  },
+    { label: "Mode",        w: 64  },
+    { label: "Spent By",    w: 80  },
+  ];
+  const TOTAL_COL_W = COLS.reduce((s, c) => s + c.w, 0); // 500
+  const ROW_H  = 18;
+  const HDR_H  = 22;
+  const PAGE_BOTTOM = PAGE_H - MARGIN;
+  let y = MARGIN;
+
+  // ── Page header ────────────────────────────────────────────────────────────
+  const drawPageHeader = () => {
+    if (hasLogo) doc.image(logoPath, MARGIN, y, { height: 34 });
+    const textX = MARGIN + (hasLogo ? 44 : 0);
+    doc.font("Helvetica-Bold").fontSize(13).fillColor(NAVY)
+       .text("Ujjwal Dental Clinic", textX, y + 2, { lineBreak: false });
+    y += 18;
+    doc.font("Helvetica").fontSize(9).fillColor(GRAY)
+       .text("Expense Report", textX, y, { lineBreak: false });
+    y += 13;
+
+    const rangeLabel = (from || to)
+      ? `${from ? fmtExportDate(from) : "All"} — ${to ? fmtExportDate(to) : "All"}`
+      : "All time";
+    doc.font("Helvetica").fontSize(8).fillColor(GRAY)
+       .text(`Period: ${rangeLabel}    Generated: ${today}`, MARGIN, y, { lineBreak: false });
+    y += 18;
+    doc.moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).strokeColor(NAVY).lineWidth(0.75).stroke();
+    y += 8;
+  };
+
+  // ── Column header row ──────────────────────────────────────────────────────
+  const drawColHeaders = () => {
+    doc.rect(MARGIN, y, TOTAL_COL_W, HDR_H).fill(NAVY);
+    let x = MARGIN;
+    COLS.forEach((c) => {
+      doc.font("Helvetica-Bold").fontSize(8).fillColor("white")
+         .text(c.label, x + 3, y + 7, { width: c.w - 6, lineBreak: false });
+      x += c.w;
+    });
+    y += HDR_H;
+  };
+
+  const ensureSpace = (needed) => {
+    if (y + needed > PAGE_BOTTOM) {
+      doc.addPage();
+      y = MARGIN;
+      drawColHeaders();
+    }
+  };
+
+  drawPageHeader();
+  drawColHeaders();
+
+  // ── Data rows ──────────────────────────────────────────────────────────────
+  let alt = false;
+  let grandTotal = 0;
+
+  for (const e of expenses) {
+    ensureSpace(ROW_H);
+    if (alt) doc.rect(MARGIN, y, TOTAL_COL_W, ROW_H).fill("#F9FAFB");
+    alt = !alt;
+
+    const cells = [
+      fmtExportDate(e.date),
+      cap(e.category, 12),
+      cap(e.description, 38),
+      fmtAmt(e.amount),
+      e.paymentMode || "",
+      cap(e.spentBy?.name || "", 16),
+    ];
+
+    let x = MARGIN;
+    cells.forEach((text, i) => {
+      doc.font("Helvetica").fontSize(8).fillColor("#1F2937")
+         .text(String(text), x + 3, y + 5, { width: COLS[i].w - 6, lineBreak: false });
+      x += COLS[i].w;
+    });
+    y += ROW_H;
+    grandTotal += e.amount || 0;
+  }
+
+  // ── Totals footer ──────────────────────────────────────────────────────────
+  ensureSpace(HDR_H + 6);
+  doc.rect(MARGIN, y, TOTAL_COL_W, HDR_H).fill(NAVY);
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("white")
+     .text(
+       `Total: ${fmtAmt(grandTotal)}    (${expenses.length} record${expenses.length !== 1 ? "s" : ""})`,
+       MARGIN + 4, y + 7, { width: TOTAL_COL_W - 8, lineBreak: false }
+     );
+  y += HDR_H;
+
+  doc.end();
 });

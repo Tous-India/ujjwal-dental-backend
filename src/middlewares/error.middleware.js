@@ -104,6 +104,19 @@ const errorMiddleware = (err, req, res, next) => {
   err.status = err.status || 'error';
 
   if (process.env.NODE_ENV === 'development') {
+    // Normalize Mongoose ValidationError to 400 in dev mode too — a 500 for a
+    // validation failure (negative amount, bad enum) is misleading even in dev.
+    // We still emit the original stack trace so debugging is unaffected.
+    if (err.name === 'ValidationError') {
+      const normalized = handleValidationErrorDB(err);
+      return res.status(400).json({
+        success: false,
+        status: normalized.status,
+        message: normalized.message,
+        errors: normalized.errors || null,
+        stack: err.stack,
+      });
+    }
     sendErrorDev(err, res);
   } else {
     // Create a copy to avoid modifying original error

@@ -23,6 +23,11 @@ router.get("/stats", authProtect, checkPermission("expenses", "view"), expenseCo
 // can already see the Reports page, without requiring a separate expenses:view grant.
 router.get("/pnl", authProtect, checkPermission("reports", "view"), expenseController.getProfitLoss);
 
+// Export — declared BEFORE /:id so the literal path segments are not swallowed
+// as an ObjectId and routed to getExpenseById.
+router.get("/export/csv", authProtect, checkPermission("expenses", "view"), expenseController.exportExpensesCsv);
+router.get("/export/pdf", authProtect, checkPermission("expenses", "view"), expenseController.exportExpensesPdf);
+
 // CRUD
 router.get("/", authProtect, checkPermission("expenses", "view"), expenseController.getExpenses);
 router.post("/", authProtect, checkPermission("expenses", "create"), expenseController.createExpense);
