@@ -21,6 +21,19 @@ process.env.FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5174";
 let mongoServer;
 
 beforeAll(async () => {
+  // Production guard: hard-stop the suite before it touches any Atlas cluster.
+  // This matters even though setup.js overrides MONGODB_URI with an in-memory
+  // URI below — a future change that loads .env before this runs could silently
+  // re-point models at production. Fail loudly instead.
+  const rawUri = process.env.MONGODB_URI;
+  if (rawUri && rawUri.includes(".mongodb.net")) {
+    throw new Error(
+      `PRODUCTION GUARD: MONGODB_URI "${rawUri.slice(0, 70)}..." ` +
+      "points at a MongoDB Atlas cluster. " +
+      "The test suite must run against an isolated database. Run aborted."
+    );
+  }
+
   // Pin to a MongoDB build that runs on the host OS (8.x targets macOS 14+).
   mongoServer = await MongoMemoryServer.create({
     binary: { version: "7.0.14" },

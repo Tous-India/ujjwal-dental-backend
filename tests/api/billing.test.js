@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import app from "../../app.js";
 import { getAdminToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
+import { cleanupPatientRecords } from "../helpers/teardown.js";
 
 describe("Invoice Lifecycle", () => {
   let token;
@@ -10,6 +11,10 @@ describe("Invoice Lifecycle", () => {
 
   beforeAll(async () => {
     token = await getAdminToken(app);
+  });
+
+  afterAll(async () => {
+    await cleanupPatientRecords(testData.patient._id);
   });
 
   it("POST /api/billing/invoices - creates draft invoice", async () => {

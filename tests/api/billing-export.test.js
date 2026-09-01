@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import app from "../../app.js";
 import { getAdminToken, authHeader } from "../helpers/auth.js";
@@ -6,6 +6,7 @@ import { testData } from "../helpers/seed.js";
 import Patient from "../../src/modules/patients/patient.model.js";
 import Invoice from "../../src/modules/billing/invoice.model.js";
 import Payment from "../../src/modules/payments/payment.model.js";
+import { cleanupPatient, cleanupPatientRecords } from "../helpers/teardown.js";
 
 describe("Billing PDF export -- respects active filters, reconciles with real data", () => {
   let token;
@@ -14,6 +15,11 @@ describe("Billing PDF export -- respects active filters, reconciles with real da
   beforeAll(async () => {
     token = await getAdminToken(app);
     extraPatient = await Patient.create({ name: "Export Test Patient", phone: "9000000099" });
+  });
+
+  afterAll(async () => {
+    await cleanupPatient(extraPatient._id);
+    await cleanupPatientRecords(testData.patient._id);
   });
 
   it("T1 (HARD GATE): export with NO filters -- PDF downloads, contains all invoices, headline totals match on-screen stats exactly", async () => {

@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import app from "../../app.js";
 import { getAdminToken, authHeader } from "../helpers/auth.js";
 import Invoice from "../../src/modules/billing/invoice.model.js";
 import Patient from "../../src/modules/patients/patient.model.js";
 import Clinic from "../../src/modules/clinics/clinic.model.js";
+import { cleanupPatient } from "../helpers/teardown.js";
 
 describe("GET /api/billing/invoices - search", () => {
   let token;
@@ -27,6 +28,11 @@ describe("GET /api/billing/invoices - search", () => {
       clinic: clinic._id,
       items: [{ itemType: "other", description: "Y", quantity: 1, unitPrice: 200, amount: 200, total: 200 }],
     });
+  });
+
+  afterAll(async () => {
+    await cleanupPatient(disha._id);
+    await cleanupPatient(other._id);
   });
 
   it("T1 (HARD GATE): search 'disha' returns ONLY Disha's invoices", async () => {

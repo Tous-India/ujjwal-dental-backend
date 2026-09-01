@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import app from "../../app.js";
 import { getAdminToken, getPatientToken, authHeader } from "../helpers/auth.js";
 import { testData } from "../helpers/seed.js";
 import Patient from "../../src/modules/patients/patient.model.js";
 import Appointment from "../../src/modules/appointments/appointment.model.js";
+import { cleanupPatientRecords } from "../helpers/teardown.js";
 
 describe("Appointment Lifecycle", () => {
   let token;
@@ -39,6 +40,10 @@ describe("Appointment Lifecycle", () => {
 
   beforeAll(async () => {
     token = await getAdminToken(app);
+  });
+
+  afterAll(async () => {
+    await cleanupPatientRecords(testData.patient._id);
   });
 
   it("POST /api/appointments - books an appointment for today", async () => {
