@@ -154,6 +154,18 @@ export const getBlogById = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Return the distinct non-empty authorName values across all posts.
+ *          Used to populate the "previously typed names" group in the editor
+ *          Author dropdown -- no separate collection, derived on demand.
+ * @route   GET /api/blogs/author-names
+ * @access  Admin / Blog Editor
+ */
+export const getDistinctAuthorNames = asyncHandler(async (req, res) => {
+  const names = await Blog.distinct("authorName", { authorName: { $nin: [null, ""] } });
+  ApiResponse.success(res, { names }, "Distinct author names fetched");
+});
+
+/**
  * @desc    Create a new blog post
  * @route   POST /api/blogs
  * @access  Admin / Blog Editor
@@ -177,6 +189,7 @@ export const createBlog = asyncHandler(async (req, res) => {
     category,
     scheduledPublishAt,
     author: bodyAuthor,
+    authorName: bodyAuthorName,
   } = req.body;
 
   if (!title || !content) {
@@ -219,6 +232,7 @@ export const createBlog = asyncHandler(async (req, res) => {
     publishedAt: resolvedStatus === "published" ? new Date() : null,
     readTimeMinutes: computeReadTime(content),
     author: bodyAuthor || req.user._id,
+    authorName: bodyAuthorName ? bodyAuthorName.trim() : "",
   });
 
   const populatedBlog = await Blog.findById(blog._id).populate("author", "name");
@@ -271,6 +285,7 @@ export const updateBlog = asyncHandler(async (req, res) => {
     "category",
     "scheduledPublishAt",
     "author",
+    "authorName",
     "focusKeyword",
     "faqs",
   ];

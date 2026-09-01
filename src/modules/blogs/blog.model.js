@@ -16,6 +16,10 @@ const blogSchema = new mongoose.Schema(
     content: { type: String, required: true }, // Rich HTML from Tiptap editor
     coverImage: { type: String, default: null }, // Cloudinary URL
     author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    // Free-text override — when set, the public page shows this instead of
+    // the populated author.name. Allows guest or external authors without a
+    // User account. Empty string means "use the staff author".
+    authorName: { type: String, default: "", trim: true },
     status: { type: String, enum: ["draft", "published", "scheduled"], default: "draft" },
     // Only meaningful when status === "scheduled". Public-read endpoints treat
     // a "scheduled" post as effectively published once this instant has

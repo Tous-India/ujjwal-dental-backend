@@ -27,6 +27,7 @@ router.get("/public/:slug", blogController.getPublishedBlogBySlug);
 router.use(authProtect);
 
 router.get("/stats", checkPermission("blogs", "view"), blogController.getBlogStats);
+router.get("/author-names", checkPermission("blogs", "view"), blogController.getDistinctAuthorNames);
 router.get("/", checkPermission("blogs", "view"), blogController.getAllBlogs);
 router.get("/:id", checkPermission("blogs", "view"), blogController.getBlogById);
 router.post("/", checkPermission("blogs", "create"), blogController.createBlog);
