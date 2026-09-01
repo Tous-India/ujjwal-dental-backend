@@ -715,13 +715,16 @@ export const exportCombined = asyncHandler(async (req, res) => {
   const SUMMARY_H = 100;
   if (y + SUMMARY_H > BOTTOM) { doc.addPage(); y = MARGIN; }
 
-  y += 14;
+  y += 18; // extra breathing space above separator so block is clearly detached from last row
   doc.strokeColor("#D1D5DB").lineWidth(0.8).moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).stroke();
   y += 10;
 
   const fmt  = (n) => `Rs. ${n.toLocaleString("en-IN")}`;
-  const col1 = MARGIN + USABLE - 220;
-  const col2 = MARGIN + USABLE - 80;
+  // Right-align to the table's right edge (MARGIN + USABLE), not the page edge.
+  // col2 + 90 = MARGIN + USABLE  →  value right edge matches table right edge exactly.
+  // col1 + 160 = col2  →  label has 160pt, fits "Patient Collected (gross)" at 10pt without crowding.
+  const col2 = MARGIN + USABLE - 90;  // was MARGIN + USABLE - 80; value now stops at table edge
+  const col1 = MARGIN + USABLE - 250; // was MARGIN + USABLE - 220; 160pt label column (was 140pt)
 
   const summaryRows = [
     ["Patient Collected (gross)", fmt(patientCollected)],
@@ -736,10 +739,10 @@ export const exportCombined = asyncHandler(async (req, res) => {
     doc.fillColor(isNet ? NAVY : "#374151")
        .fontSize(isNet ? 11 : 10)
        .font(isNet ? "Helvetica-Bold" : "Helvetica");
-    doc.text(label, col1, y, { width: 140, align: "right", lineBreak: false });
+    doc.text(label, col1, y, { width: 160, align: "right", lineBreak: false });
     doc.fillColor(isNet ? NAVY : "#374151")
        .font("Helvetica-Bold");
-    doc.text(value, col2, y, { width: 120, align: "right", lineBreak: false });
+    doc.text(value, col2, y, { width: 90, align: "right", lineBreak: false });
     y += 16;
   }
 
