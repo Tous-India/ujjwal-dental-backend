@@ -1,5 +1,6 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import { CLINIC_NAME } from "../../constants/clinic.js";
 import Expense from "./expense.model.js";
 import Invoice from "../billing/invoice.model.js";
 import Payment from "../payments/payment.model.js";
@@ -816,7 +817,7 @@ export const exportExpensesPdf = asyncHandler(async (req, res) => {
     if (hasLogo) doc.image(logoPath, MARGIN, y, { height: 34 });
     const textX = MARGIN + (hasLogo ? 44 : 0);
     doc.font("Helvetica-Bold").fontSize(13).fillColor(NAVY)
-       .text("Ujjwal Dental Clinic", textX, y + 2, { lineBreak: false });
+       .text(CLINIC_NAME, textX, y + 2, { lineBreak: false });
     y += 18;
     doc.font("Helvetica").fontSize(9).fillColor(GRAY)
        .text("Expense Report", textX, y, { lineBreak: false });

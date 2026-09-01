@@ -8,6 +8,7 @@ import PDFDocument from "pdfkit";
 import { parseIstDateRange } from "../../utils/istDateRange.js";
 import { fireWhatsApp } from "../../utils/whatsapp.js";
 import { describeInvoice } from "../../utils/paymentDescription.js";
+import { CLINIC_NAME } from "../../constants/clinic.js";
 
 /**
  * BILLING CONTROLLER
@@ -1352,11 +1353,10 @@ export const downloadInvoicePdf = asyncHandler(async (req, res) => {
     doc.text(`Phone: ${invoice.clinic.phone}`, { align: "center" });
   }
 
-  // Legal company line (payment gateway is registered under this company)
   doc.moveDown(0.4);
   doc.fontSize(9).font("Helvetica-Oblique").fillColor("#555555");
   doc.text(
-    "Ujjwal Dental Clinic and Maxillofacial Surgery Center",
+    CLINIC_NAME,
     leftMargin,
     doc.y,
     { align: "center", width: pageWidth },
