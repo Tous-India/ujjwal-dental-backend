@@ -18,6 +18,9 @@ router.get("/staff", authProtect, checkPermission("external_income", "view"), ct
 // Stats (must come before /:id to avoid route conflict)
 router.get("/stats", authProtect, checkPermission("external_income", "view"), ctrl.getExternalIncomeStats);
 
+// Export CSV / PDF — must be before /:id
+router.get("/export", authProtect, checkPermission("external_income", "view"), ctrl.exportExternalIncome);
+
 // List
 router.get("/", authProtect, checkPermission("external_income", "view"), ctrl.getExternalIncomes);
 

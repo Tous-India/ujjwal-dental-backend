@@ -4,6 +4,8 @@ import ExternalIncome from "./externalIncome.model.js";
 import User from "../users/user.model.js";
 import mongoose from "mongoose";
 import { parseIstDateRange } from "../../utils/istDateRange.js";
+import PDFDocument from "pdfkit";
+import { CLINIC_NAME } from "../../constants/clinic.js";
 
 /**
  * @desc    List external income records
@@ -196,6 +198,196 @@ export const voidExternalIncome = asyncHandler(async (req, res) => {
     .lean();
 
   ApiResponse.success(res, { record: updated }, "External income record voided successfully");
+});
+
+/**
+ * @desc    Export external income as CSV or PDF
+ * @route   GET /api/external-income/export?format=csv|pdf&from=&to=
+ * @access  checkPermission("external_income","view")
+ */
+export const exportExternalIncome = asyncHandler(async (req, res) => {
+  const { from, to, format = "pdf" } = req.query;
+
+  const query = { isVoided: { $ne: true } };
+  if (from || to) query.date = parseIstDateRange(from, to);
+
+  const records = await ExternalIncome.find(query)
+    .populate("doctor", "name")
+    .populate("recordedBy", "name")
+    .sort({ date: -1 })
+    .limit(5000)
+    .lean();
+
+  const { fileURLToPath } = await import("url");
+  const { dirname, resolve } = await import("path");
+  const { existsSync } = await import("fs");
+  const __dir = dirname(fileURLToPath(import.meta.url));
+  const logoPath = resolve(__dir, "../../../../frontend/public/ujjwal-dental-logo.png");
+  const hasLogo = existsSync(logoPath);
+
+  const MTH = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const fmtDate = (d) => {
+    if (!d) return "-";
+    const dt = new Date(d);
+    return `${String(dt.getDate()).padStart(2,"0")} ${MTH[dt.getMonth()]} ${dt.getFullYear()}`;
+  };
+  const today = fmtDate(new Date());
+  const totalAmount = records.reduce((s, r) => s + (r.amount || 0), 0);
+
+  // ── CSV ──────────────────────────────────────────────────────────────────────
+  if (format === "csv") {
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return s.includes(",") || s.includes('"') || s.includes("\n")
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csvRow = (...cells) => cells.map(esc).join(",");
+
+    const lines = [
+      csvRow(CLINIC_NAME, "", "Payment History — Another Source"),
+      csvRow("Exported:", today, from ? `From: ${fmtDate(from)}` : "", to ? `To: ${fmtDate(to)}` : ""),
+      csvRow(`Records: ${records.length}`, `Total: Rs. ${totalAmount.toLocaleString("en-IN")}`),
+      "",
+      csvRow("Date", "Source (Clinic)", "Treatment / Service", "Doctor / Staff", "Amount (Rs.)", "Notes", "Recorded By"),
+    ];
+
+    for (const r of records) {
+      lines.push(csvRow(
+        fmtDate(r.date),
+        r.clinicName || "-",
+        r.treatment || "-",
+        r.doctor?.name || r.doctorName || "-",
+        (r.amount || 0).toLocaleString("en-IN"),
+        r.notes || "-",
+        r.recordedBy?.name || "-",
+      ));
+    }
+
+    const csv = lines.join("\r\n");
+    const filename = `payment-history-another-source-${today.replace(/ /g, "-")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send("﻿" + csv);
+  }
+
+  // ── PDF (A4 landscape) ───────────────────────────────────────────────────────
+  const PAGE_W = 841.89;
+  const PAGE_H = 595.28;
+  const MARGIN  = 40;
+  const USABLE  = PAGE_W - MARGIN * 2;
+
+  const cols = [
+    { header: "DATE",             key: "date",       align: "left",  w: 80  },
+    { header: "SOURCE (CLINIC)",  key: "clinic",     align: "left",  w: 155 },
+    { header: "TREATMENT",        key: "treatment",  align: "left",  w: 140 },
+    { header: "DOCTOR / STAFF",   key: "doctor",     align: "left",  w: 130 },
+    { header: "AMT (Rs.)",        key: "amount",     align: "right", w: 75  },
+    { header: "NOTES",            key: "notes",      align: "left",  w: 181 },
+  ];
+
+  let xAcc = MARGIN;
+  for (const col of cols) { col.x = xAcc; xAcc += col.w; }
+
+  const ROW_H  = 24;
+  const HDR_H  = 26;
+  const PAD    = 6;
+  const BOTTOM = PAGE_H - 55;
+  const NAVY   = "#0D1B4A";
+
+  const cellX = (col) => col.align === "right" ? col.x : col.x + PAD;
+  const cellW = (col) => col.w - PAD;
+
+  const doc = new PDFDocument({ size: [PAGE_W, PAGE_H], margin: MARGIN, autoFirstPage: true });
+  const filename = `payment-history-another-source-${today.replace(/ /g, "-")}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  doc.on("error", (err) => {
+    console.error("[exportExternalIncome] PDFDocument stream error:", err);
+    if (!res.writableEnded) res.end();
+  });
+  doc.pipe(res);
+
+  const drawHeaders = (y) => {
+    doc.rect(MARGIN, y, USABLE, HDR_H).fill("#E8EAF6");
+    doc.fillColor("#3730A3").fontSize(8).font("Helvetica-Bold");
+    for (const col of cols) {
+      doc.text(col.header, cellX(col), y + 9, { width: cellW(col), align: col.align, lineBreak: false, ellipsis: true });
+    }
+    return y + HDR_H;
+  };
+
+  let y = MARGIN;
+  if (hasLogo) {
+    doc.image(logoPath, MARGIN, y, { width: 55, height: 55 });
+    const txtX = MARGIN + 65;
+    const txtW = USABLE - 65;
+    doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
+    doc.text(CLINIC_NAME, txtX, y + 2, { width: txtW, lineBreak: false });
+    y = MARGIN + 62;
+  } else {
+    doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
+    doc.text(CLINIC_NAME, MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+    y += 26;
+  }
+
+  doc.strokeColor("#D1D5DB").lineWidth(0.8).moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).stroke();
+  y += 10;
+
+  doc.fillColor(NAVY).fontSize(13).font("Helvetica-Bold");
+  doc.text("Payment History — Another Source", MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+  y += 20;
+
+  const filterParts = [];
+  if (from || to) filterParts.push(`Date: ${fmtDate(from)} to ${fmtDate(to)}`);
+  filterParts.push(`Exported: ${today}`);
+  doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
+  doc.text(filterParts.join("   |   "), MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
+  y += 14;
+
+  doc.fillColor(NAVY).fontSize(10).font("Helvetica-Bold");
+  doc.text(
+    `Total Records: ${records.length}   |   Total Amount: Rs. ${totalAmount.toLocaleString("en-IN")}`,
+    MARGIN, y, { align: "center", width: USABLE, lineBreak: false }
+  );
+  y += 18;
+
+  y = drawHeaders(y);
+
+  for (let i = 0; i < records.length; i++) {
+    if (y + ROW_H > BOTTOM) { doc.addPage(); y = MARGIN; y = drawHeaders(y); }
+    const r = records[i];
+    const rowY = y;
+    doc.rect(MARGIN, rowY, USABLE, ROW_H).fill(i % 2 === 0 ? "#FFFFFF" : "#F8F8FF");
+
+    const vals = {
+      date:      fmtDate(r.date),
+      clinic:    r.clinicName || "-",
+      treatment: r.treatment || "-",
+      doctor:    r.doctor?.name || r.doctorName || "-",
+      amount:    (r.amount || 0).toLocaleString("en-IN"),
+      notes:     r.notes || "-",
+    };
+
+    doc.fillColor("#1a1a2e").fontSize(9).font("Helvetica");
+    for (const col of cols) {
+      doc.text(vals[col.key] ?? "-", cellX(col), rowY + 7, {
+        width: cellW(col), align: col.align, lineBreak: false, ellipsis: true,
+      });
+    }
+
+    doc.strokeColor("#E5E7EB").lineWidth(0.5)
+       .moveTo(MARGIN, rowY + ROW_H)
+       .lineTo(MARGIN + USABLE, rowY + ROW_H)
+       .stroke();
+    y = rowY + ROW_H;
+  }
+
+  doc.fillColor("#9ca3af").fontSize(8).font("Helvetica");
+  doc.text(
+    `Generated by ${CLINIC_NAME} admin panel — ${today}`,
+    MARGIN, PAGE_H - MARGIN - 10, { align: "center", width: USABLE, lineBreak: false }
+  );
+  doc.end();
 });
 
 /**

@@ -34,6 +34,9 @@ router.get("/number/:paymentNumber", authProtect, paymentController.getPaymentBy
 // Export filtered payments as PDF — must be before /:id to avoid param conflict
 router.get("/export/pdf", authProtect, paymentController.exportPaymentsPdf);
 
+// Export filtered payments as CSV (same query logic as PDF)
+router.get("/export/csv", authProtect, paymentController.exportPaymentsCsv);
+
 // Combined export (all tabs at once): ?format=csv|pdf&from=&to=
 router.get("/export/combined", authProtect, paymentController.exportCombined);
 

@@ -428,6 +428,78 @@ export const exportPaymentsPdf = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Export filtered payments as CSV (mirrors exportPaymentsPdf query logic)
+ * @route   GET /api/payments/export/csv?status=&paymentMode=&type=&from=&to=
+ * @access  Admin
+ */
+export const exportPaymentsCsv = asyncHandler(async (req, res) => {
+  const { patient, status, paymentMode, type, clinic, from, to } = req.query;
+  const query = buildPaymentQuery({ patient, status, paymentMode, type, clinic, from, to });
+
+  const payments = await Payment.find(query)
+    .populate("patient", "name")
+    .populate("invoice", "invoiceNumber")
+    .sort({ createdAt: -1 })
+    .limit(5000)
+    .lean();
+
+  const isRefunded = status?.includes("refunded") || status?.includes("reversed");
+  const tabLabel   = isRefunded ? "Refunded & Voided" : "Paid";
+
+  const MTH = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const fmtDate = (d) => {
+    if (!d) return "-";
+    const dt = new Date(d);
+    return `${String(dt.getDate()).padStart(2,"0")} ${MTH[dt.getMonth()]} ${dt.getFullYear()}`;
+  };
+  const today = fmtDate(new Date());
+
+  const esc = (v) => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csvRow = (...cells) => cells.map(esc).join(",");
+
+  const baseHeaders = ["Date", "Receipt No.", "Patient", "Invoice No.", "Service", "Amount (Rs.)", "Mode"];
+  const headers = isRefunded
+    ? [...baseHeaders, "Refunded On", "Reason"]
+    : baseHeaders;
+
+  const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0);
+
+  const lines = [
+    csvRow(CLINIC_NAME, "", `Payment History — ${tabLabel}`),
+    csvRow("Exported:", today, from ? `From: ${fmtDate(from)}` : "", to ? `To: ${fmtDate(to)}` : ""),
+    csvRow(`Records: ${payments.length}`, `Total: Rs. ${totalAmount.toLocaleString("en-IN")}`),
+    "",
+    csvRow(...headers),
+  ];
+
+  for (const p of payments) {
+    const baseRow = [
+      fmtDate(p.paidAt || p.createdAt),
+      p.paymentNumber || "-",
+      p.patient?.name || "-",
+      p.invoice?.invoiceNumber || "-",
+      p.treatmentName || TYPE_LABELS[p.type] || p.type || "-",
+      (p.amount || 0).toLocaleString("en-IN"),
+      MODE_LABELS[p.paymentMode] || p.paymentMode || "-",
+    ];
+    const row = isRefunded
+      ? [...baseRow, fmtDate(p.refund?.refundedAt), p.refund?.reason || "-"]
+      : baseRow;
+    lines.push(csvRow(...row));
+  }
+
+  const csv = lines.join("\r\n");
+  const filename = `payment-history-${tabLabel.toLowerCase().replace(/\s+&\s+|\s+/g, "-")}-${today.replace(/ /g, "-")}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  return res.send("﻿" + csv);
+});
+
+/**
  * @desc    Export combined ledger: patient payments + refunds + external income
  * @route   GET /api/payments/export/combined?format=csv|pdf&from=&to=
  * @access  Admin
