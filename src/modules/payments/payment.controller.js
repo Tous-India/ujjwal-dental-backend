@@ -322,17 +322,12 @@ export const exportPaymentsPdf = asyncHandler(async (req, res) => {
     const txtW = USABLE - 65;
     doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
     doc.text("Ujjwal Dental Clinic", txtX, y + 2, { width: txtW, lineBreak: false });
-    doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
-    doc.text("A unit of Healing Fairy Health Care Pvt. Ltd.", txtX, y + 24, { width: txtW, lineBreak: false });
     y = MARGIN + 62; // below logo (55pt) + 7pt gap
   } else {
     // Centred fallback when no logo file is found
     doc.fillColor(NAVY).fontSize(18).font("Helvetica-Bold");
     doc.text("Ujjwal Dental Clinic", MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
     y += 26;
-    doc.fillColor("#6b7280").fontSize(9).font("Helvetica");
-    doc.text("A unit of Healing Fairy Health Care Pvt. Ltd.", MARGIN, y, { align: "center", width: USABLE, lineBreak: false });
-    y += 16;
   }
 
   // Thin horizontal divider below header block
