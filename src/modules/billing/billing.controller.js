@@ -121,7 +121,7 @@ export const getAllInvoices = asyncHandler(async (req, res) => {
     const realPaid = realPaidByInvoice.get(String(inv._id)) || 0;
     doc.amountPaid = realPaid;
     doc.balanceDue = Math.max(0, (doc.grandTotal || 0) - realPaid);
-    if (realPaid >= doc.grandTotal && doc.grandTotal > 0) doc.paymentStatus = "paid";
+    if (realPaid >= doc.grandTotal) doc.paymentStatus = "paid";
     else if (realPaid > 0) doc.paymentStatus = "partial";
     else doc.paymentStatus = "unpaid";
     return doc;
@@ -163,7 +163,7 @@ export const exportInvoices = asyncHandler(async (req, res) => {
     const realPaid = realPaidByInvoice.get(String(inv._id)) || 0;
     const grandTotal = inv.grandTotal || 0;
     const due = Math.max(0, grandTotal - realPaid);
-    const paymentStatusLive = realPaid >= grandTotal && grandTotal > 0 ? "paid" : realPaid > 0 ? "partial" : "unpaid";
+    const paymentStatusLive = realPaid >= grandTotal ? "paid" : realPaid > 0 ? "partial" : "unpaid";
     return {
       invoiceNumber: inv.invoiceNumber || "-",
       date: inv.invoiceDate || inv.createdAt,
@@ -781,7 +781,7 @@ export const correctInvoice = asyncHandler(async (req, res) => {
   const balanceDue = Math.max(0, grandTotal - effectiveAmountPaid);
 
   let paymentStatus = "unpaid";
-  if (effectiveAmountPaid >= grandTotal && grandTotal > 0) paymentStatus = "paid";
+  if (effectiveAmountPaid >= grandTotal) paymentStatus = "paid";
   else if (effectiveAmountPaid > 0) paymentStatus = "partial";
 
   if (items) set.subtotal = subtotal;
