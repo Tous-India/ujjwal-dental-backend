@@ -263,6 +263,11 @@ export const exportExternalIncome = asyncHandler(async (req, res) => {
       ));
     }
 
+    // Bottom totals — same figures as header rows, visible after scrolling data
+    lines.push("");
+    lines.push(csvRow("Total Amount:", `Rs. ${totalAmount.toLocaleString("en-IN")}`));
+    lines.push(csvRow("Records:", String(records.length)));
+
     const csv = lines.join("\r\n");
     const filename = `payment-history-another-source-${today.replace(/ /g, "-")}.csv`;
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -381,6 +386,21 @@ export const exportExternalIncome = asyncHandler(async (req, res) => {
        .stroke();
     y = rowY + ROW_H;
   }
+
+  // ── Bottom totals ──────────────────────────────────────────────────────────
+  if (y + 50 > BOTTOM) { doc.addPage(); y = MARGIN; }
+  y += 12;
+  doc.strokeColor("#D1D5DB").lineWidth(0.8).moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).stroke();
+  y += 8;
+
+  const sumValX = MARGIN + USABLE - 90;
+  const sumLblX = MARGIN + USABLE - 250;
+  doc.fillColor(NAVY).fontSize(11).font("Helvetica-Bold");
+  doc.text("Total Amount:", sumLblX, y, { width: 150, align: "right", lineBreak: false });
+  doc.text(`Rs. ${totalAmount.toLocaleString("en-IN")}`, sumValX, y, { width: 90, align: "right", lineBreak: false });
+  y += 14;
+  doc.fillColor("#6b7280").fontSize(8).font("Helvetica");
+  doc.text(`${records.length} record${records.length !== 1 ? "s" : ""}`, sumLblX, y, { width: 150, align: "right", lineBreak: false });
 
   doc.fillColor("#9ca3af").fontSize(8).font("Helvetica");
   doc.text(

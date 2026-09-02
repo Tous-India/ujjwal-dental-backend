@@ -415,6 +415,24 @@ export const exportPaymentsPdf = asyncHandler(async (req, res) => {
     y = rowY + ROW_H; // explicit tracker — never use doc.y or moveDown
   }
 
+  // ── Bottom totals — same figures as header, visible after scrolling the table ──
+  // Appears on page one only when the table is very short; on multi-page exports
+  // it falls on the last page, keeping it close to the data rows it summarises.
+  if (y + 50 > BOTTOM) { doc.addPage(); y = MARGIN; }
+  y += 12;
+  doc.strokeColor("#D1D5DB").lineWidth(0.8).moveTo(MARGIN, y).lineTo(MARGIN + USABLE, y).stroke();
+  y += 8;
+
+  const sumValX  = MARGIN + USABLE - 90;  // right edge of value, matches table right edge
+  const sumLblX  = MARGIN + USABLE - 250; // label left edge (150pt label column)
+  const sumLabel = isRefunded ? "Total Refunded:" : "Total Collected:";
+  doc.fillColor(NAVY).fontSize(11).font("Helvetica-Bold");
+  doc.text(sumLabel, sumLblX, y, { width: 150, align: "right", lineBreak: false });
+  doc.text(`Rs. ${totalAmount.toLocaleString("en-IN")}`, sumValX, y, { width: 90, align: "right", lineBreak: false });
+  y += 14;
+  doc.fillColor("#6b7280").fontSize(8).font("Helvetica");
+  doc.text(`${payments.length} record${payments.length !== 1 ? "s" : ""}`, sumLblX, y, { width: 150, align: "right", lineBreak: false });
+
   // ── Footer — pinned to bottom of last page ─────────────────────────────────
   // y must be ≤ PAGE_H - MARGIN (= PDFKit's usable bottom boundary).
   // PAGE_H - 28 exceeded that boundary and caused PDFKit to auto-add a blank page.
@@ -491,6 +509,11 @@ export const exportPaymentsCsv = asyncHandler(async (req, res) => {
       : baseRow;
     lines.push(csvRow(...row));
   }
+
+  // Bottom totals — same figures as header rows, visible after scrolling data
+  lines.push("");
+  lines.push(csvRow(isRefunded ? "Total Refunded:" : "Total Collected:", `Rs. ${totalAmount.toLocaleString("en-IN")}`));
+  lines.push(csvRow("Records:", String(payments.length)));
 
   const csv = lines.join("\r\n");
   const filename = `payment-history-${tabLabel.toLowerCase().replace(/\s+&\s+|\s+/g, "-")}-${today.replace(/ /g, "-")}.csv`;
@@ -621,6 +644,14 @@ export const exportCombined = asyncHandler(async (req, res) => {
       csvRow(`Records: ${allRows.length}`,
         `Payments: ${paidCount}`, `Refunds: ${refundCount}`, `External: ${incomeCount}`,
         "", "", "", ""),
+      // Amounts summary in header — mirrors the bottom totals block for quick reference
+      csvRow(
+        `Patient Collected: Rs. ${patientCollected.toLocaleString("en-IN")}`,
+        `Refunds: Rs. ${totalRefunds.toLocaleString("en-IN")}`,
+        `External: Rs. ${totalExternal.toLocaleString("en-IN")}`,
+        `Total Collected: Rs. ${totalCollected.toLocaleString("en-IN")}`,
+        `Net: Rs. ${netCollection.toLocaleString("en-IN")}`,
+        "", "", ""),
       "",
       csvRow("Date", "Type", "Patient / Source", "Description",
              "Amount (Rs.)", "Mode", "Reference", "Recorded By"),
@@ -738,6 +769,17 @@ export const exportCombined = asyncHandler(async (req, res) => {
   doc.fillColor(NAVY).fontSize(10).font("Helvetica-Bold");
   doc.text(
     `Total Records: ${allRows.length}   |   Payments: ${paidCount}   |   Refunds: ${refundCount}   |   External: ${incomeCount}`,
+    MARGIN, y, { align: "center", width: USABLE, lineBreak: false }
+  );
+  y += 14;
+  // Amounts summary in header — same figures as the bottom totals block, for
+  // quick reference without scrolling to the end of a long report.
+  doc.fillColor(NAVY).fontSize(9).font("Helvetica");
+  doc.text(
+    `Patient Collected: Rs. ${patientCollected.toLocaleString("en-IN")}   |   ` +
+    `Refunds: Rs. ${totalRefunds.toLocaleString("en-IN")}   |   ` +
+    `External: Rs. ${totalExternal.toLocaleString("en-IN")}   |   ` +
+    `Net: Rs. ${netCollection.toLocaleString("en-IN")}`,
     MARGIN, y, { align: "center", width: USABLE, lineBreak: false }
   );
   y += 18;
